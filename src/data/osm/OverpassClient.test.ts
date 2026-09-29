@@ -10,6 +10,7 @@ describe('buildRoadQuery', () => {
 
     it('includes cars-only road types and excludes footways', () => {
         expect(query).toContain('residential')
+        expect(query).toContain('service')
         expect(query).not.toContain('footway')
     })
 })

@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import type { RoadGraph } from '@core/graph/types'
 import type { MapProvider, ProgressCallback } from './MapProvider'
 
-const CACHE_VERSION = 1
+const CACHE_VERSION = 2
 
 interface CacheFile {
     version: number

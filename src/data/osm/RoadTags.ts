@@ -26,6 +26,7 @@ export function defaultSpeedLimit(roadClass: string): number {
         unclassified: 40,
         residential: 30,
         living_street: 10,
+        service: 20,
         motorway_link: 60,
         trunk_link: 50,
         primary_link: 40,

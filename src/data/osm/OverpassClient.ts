@@ -41,7 +41,7 @@ export interface OverpassResponse {
 /** Road types cars can drive on. Service roads and tracks are left out on purpose. */
 const DRIVABLE = [
     'motorway', 'trunk', 'primary', 'secondary', 'tertiary',
-    'unclassified', 'residential', 'living_street',
+    'unclassified', 'residential', 'living_street', 'service',
     'motorway_link', 'trunk_link', 'primary_link', 'secondary_link', 'tertiary_link'
 ].join('|')
 
