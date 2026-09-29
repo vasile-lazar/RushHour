@@ -1,7 +1,7 @@
-﻿export {}
+﻿import type { TrafficSimApi } from '@shared/ipc'
 
 declare global {
     interface Window {
-        trafficSim: { platform: string }
+        trafficSim: TrafficSimApi
     }
 }

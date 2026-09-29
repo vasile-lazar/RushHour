@@ -1,4 +1,6 @@
-﻿export interface Place {
+﻿import {USER_AGENT} from "./userAgent";
+
+export interface Place {
     /** Full name as OSM knows it, useful to show the user what was matched */
     displayName: string
     osmType: 'relation' | 'way'
@@ -26,7 +28,7 @@ export async function geocode(query: string): Promise<Place> {
 
     const response = await fetch(`${NOMINATIM_URL}?${params}`, {
         // Nominatim's usage policy requires an identifying User-Agent
-        headers: { 'User-Agent': 'RushHour/0.1 (city traffic simulation)' }
+        headers: { 'User-Agent': USER_AGENT }
     })
     if (!response.ok) {
         throw new Error(`Geocoding failed (HTTP ${response.status})`)
