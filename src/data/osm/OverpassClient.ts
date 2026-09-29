@@ -1,4 +1,19 @@
-﻿export interface OverpassNode {
+﻿import {USER_AGENT} from "./userAgent";
+
+const ENDPOINTS = [
+    'https://overpass-api.de/api/interpreter',
+    'https://overpass.private.coffee/api/interpreter'
+]
+
+const MAX_ROUNDS = 3
+const RETRY_DELAY_MS = 5_000
+/** Overpass asks clients to wait 30 s after a 429 or 406 */
+const RATE_LIMIT_DELAY_MS = 30_000
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
+
+export interface OverpassNode {
     type: 'node'
     id: number
     lat: number
@@ -23,12 +38,6 @@ export interface OverpassResponse {
 }
 
 
-const ENDPOINTS = [
-    'https://overpass-api.de/api/interpreter',
-    'https://overpass.kumi.systems/api/interpreter'
-]
-
-
 /** Road types cars can drive on. Service roads and tracks are left out on purpose. */
 const DRIVABLE = [
     'motorway', 'trunk', 'primary', 'secondary', 'tertiary',
@@ -51,32 +60,41 @@ export function buildRoadQuery(areaId: number): string {
 /** Downloads every drivable road (and the nodes they use) inside an area. */
 export async function fetchRoads(areaId: number): Promise<OverpassResponse> {
     const body = `data=${encodeURIComponent(buildRoadQuery(areaId))}`
-    let lastError: unknown
+    const errors: string[] = []
 
-    for (const endpoint of ENDPOINTS) {
-        try {
-            const response = await fetch(endpoint, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                    'User-Agent': 'RushHour/0.1 (city traffic simulation)'
-                },
-                body,
-                signal: AbortSignal.timeout(200_000)
-            })
-            if (!response.ok) {
-                throw new Error(`Overpass returned HTTP ${response.status}`)
-            }
+    for (let round = 1; round <= MAX_ROUNDS; round++) {
+        let rateLimited = false
 
-            const data = (await response.json()) as OverpassResponse
-            if (data.remark?.includes('runtime error')) {
-                throw new Error(`Overpass query failed: ${data.remark}`)
+        for (const endpoint of ENDPOINTS) {
+            try {
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'User-Agent': USER_AGENT
+                    },
+                    body,
+                    signal: AbortSignal.timeout(200_000)
+                })
+                if (!response.ok) {
+                    if (response.status === 429 || response.status === 406) rateLimited = true
+                    throw new Error(`HTTP ${response.status}`)
+                }
+
+                const data = (await response.json()) as OverpassResponse
+                if (data.remark?.includes('runtime error')) {
+                    throw new Error(`query failed: ${data.remark}`)
+                }
+                return data
+            } catch (error) {
+                errors.push(`round ${round}, ${new URL(endpoint).host}: ${(error as Error).message}`)
             }
-            return data
-        } catch (error) {
-            lastError = error // try the next mirror
+        }
+
+        if (round < MAX_ROUNDS) {
+            await sleep(rateLimited ? RATE_LIMIT_DELAY_MS : RETRY_DELAY_MS * round)
         }
     }
 
-    throw new Error(`All Overpass servers failed: ${(lastError as Error).message}`)
+    throw new Error(`All Overpass servers failed:\n${errors.join('\n')}`)
 }
