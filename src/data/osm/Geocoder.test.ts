@@ -1,5 +1,5 @@
 ﻿import { describe, expect, it } from 'vitest'
-import { toOverpassAreaId } from './geocoder'
+import { toOverpassAreaId } from './Geocoder'
 
 describe('toOverpassAreaId', () => {
     it('offsets relations by 3600000000', () => {
