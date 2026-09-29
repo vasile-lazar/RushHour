@@ -18,6 +18,7 @@ describe('defaultSpeedLimit', () => {
     it('uses the class table, with a fallback for unknown classes', () => {
         expect(defaultSpeedLimit('residential')).toBeCloseTo(30 / 3.6, 5)
         expect(defaultSpeedLimit('mystery')).toBeCloseTo(40 / 3.6, 5)
+        expect(defaultSpeedLimit('service')).toBeCloseTo(20 / 3.6, 5)
     })
 })
 

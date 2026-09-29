@@ -1,7 +1,10 @@
-﻿const form = document.getElementById('city-form') as HTMLFormElement
+﻿import { MapView } from './view/MapView'
+
+const form = document.getElementById('city-form') as HTMLFormElement
 const input = document.getElementById('city-input') as HTMLInputElement
 const button = document.getElementById('load-button') as HTMLButtonElement
 const state = document.getElementById('status') as HTMLSpanElement
+const map = new MapView(document.getElementById('map') as HTMLCanvasElement)
 
 window.trafficSim.onCityProgress((message) => {
     state.textContent = message
@@ -12,6 +15,7 @@ form.addEventListener('submit', async (event) => {
     button.disabled = true
     try {
         const graph = await window.trafficSim.loadCity(input.value)
+        map.setGraph(graph)
         state.textContent =
             `${graph.name}: ${graph.nodes.length} intersections, ${graph.edges.length} road segments`
     } catch (error) {
