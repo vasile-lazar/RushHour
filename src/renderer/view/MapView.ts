@@ -5,6 +5,13 @@ import { Viewport } from './Viewport'
 const ROAD_WIDTH_M = 7
 const MIN_ROAD_PX = 0.8
 const MAX_ROAD_PX = 6
+
+const VEHICLE_COLOR = '#ffb703'
+/** Vehicles are drawn about this many meters wide when zoomed in, clamped in pixels when zoomed out. */
+const VEHICLE_SIZE_M = 6
+const VEHICLE_MIN_PX = 2.5
+const VEHICLE_MAX_PX = 8
+
 /** How long the view must stay still before the roads are redrawn in full detail. */
 const SETTLE_MS = 120
 
@@ -69,6 +76,8 @@ export class MapView {
     private settleTimer: ReturnType<typeof setTimeout> | null = null
 
     private roads: Path2D[] | null = null
+    /** Latest vehicle positions from the simulation: x0, y0, x1, y1, ... in world meters */
+    private vehicles: Float32Array = new Float32Array(0)
     private fitBounds: RoadGraph['bounds'] | null = null
     private drawQueued = false
     private lastPointer: { x: number; y: number } | null = null
@@ -94,12 +103,17 @@ export class MapView {
 
     setGraph(graph: RoadGraph): void {
         this.roads = buildRoadPaths(graph)
+        this.vehicles = new Float32Array(0)
         this.fitBounds = graph.bounds
         this.viewport.fit(graph.bounds)
         this.renderRoadLayer()
         this.requestDraw()
     }
 
+    setVehicles(positions: Float32Array): void {
+        this.vehicles = positions
+        this.requestDraw()
+    }
     // --- drawing ---------------------------------------------------------
 
     /** The slow part: strokes every road into the off-screen layer. */
@@ -147,20 +161,41 @@ export class MapView {
         ctx.clearRect(0, 0, canvas.width, canvas.height)
 
         const layer = this.roadLayerView
-        if (!layer || roadLayer.width === 0 || roadLayer.height === 0) return
+        if (layer && roadLayer.width > 0 && roadLayer.height > 0) {
+            // Move and scale the (possibly stale) road picture to match the current view
+            const dpr = window.devicePixelRatio || 1
+            const k = viewport.scale / layer.scale
+            ctx.setTransform(
+                k, 0,
+                0, k,
+                dpr * (viewport.offsetX - layer.offsetX * k),
+                dpr * (viewport.offsetY - layer.offsetY * k)
+            )
+            ctx.drawImage(roadLayer, 0, 0)
+        }
 
-        // Move and scale the (possibly stale) road picture to match the current view
-        const dpr = window.devicePixelRatio || 1
-        const k = viewport.scale / layer.scale
-        ctx.setTransform(
-            k, 0,
-            0, k,
-            dpr * (viewport.offsetX - layer.offsetX * k),
-            dpr * (viewport.offsetY - layer.offsetY * k)
-        )
-        ctx.drawImage(roadLayer, 0, 0)
+        this.drawVehicles()
     }
 
+    /** Vehicles change every frame, so they are drawn fresh, always at the exact current view. */
+    private drawVehicles(): void {
+        const { ctx, viewport, vehicles } = this
+        const dpr = window.devicePixelRatio || 1
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0) // work in CSS pixels
+
+        const size = Math.min(VEHICLE_MAX_PX, Math.max(VEHICLE_MIN_PX, viewport.scale * VEHICLE_SIZE_M))
+        const half = size / 2
+        ctx.fillStyle = VEHICLE_COLOR
+
+        for (let i = 0; i + 1 < vehicles.length; i += 2) {
+            const x = vehicles[i] * viewport.scale + viewport.offsetX
+            const y = -vehicles[i + 1] * viewport.scale + viewport.offsetY
+            // Skip vehicles outside the window
+            if (x < -size || y < -size || x > viewport.width + size || y > viewport.height + size) continue
+            ctx.fillRect(x - half, y - half, size, size)
+        }
+    }
+    
     private requestDraw(): void {
         if (this.drawQueued) return
         this.drawQueued = true

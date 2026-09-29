@@ -14,7 +14,7 @@
         #toolbar { display: flex; align-items: center; gap: 12px; padding: 8px 12px;
             border-bottom: 1px solid #1c2733; }
         #city-form { display: flex; gap: 8px; }
-        input, button { font: inherit; padding: 4px 8px; color: #dbe7f3; background: #131b24;
+        input, button, select { font: inherit; padding: 4px 8px; color: #dbe7f3; background: #131b24;
             border: 1px solid #1c2733; border-radius: 4px; }
         button:disabled { opacity: 0.5; }
         #status { white-space: pre-line; }
@@ -29,6 +29,18 @@
         <button id="load-button" type="submit">Load</button>
     </form>
     <span id="status"></span>
+    <label>Vehicles
+        <input id="vehicle-count" type="number" min="1" max="100000" value="2000" />
+    </label>
+    <button id="play-button" type="button" disabled>Play</button>
+    <label>Speed
+        <select id="speed-select">
+            <option value="1">1×</option>
+            <option value="10">10×</option>
+            <option value="50" selected>50×</option>
+            <option value="200">200×</option>
+        </select>
+    </label>
 </div>
 <canvas id="map"></canvas>
 <script type="module" src="./main.ts"></script>
