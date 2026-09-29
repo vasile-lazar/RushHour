@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "isolatedModules": true,
+    "types": ["node"],
+    "paths": {
+      "@core/*": ["./src/core/*"],
+      "@data/*": ["./src/data/*"],
+      "@shared/*": ["./src/shared/*"]
+    }
+  },
+  "include": ["src", "electron.vite.config.ts"]
+}

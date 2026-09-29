@@ -1,0 +1,6 @@
+.idea
+.venv
+.env
+node_modules
+out
+release
