@@ -39,3 +39,22 @@ export const NO_SIGNALS: SignalControl = {
     stateOf: () => 'green',
     approaches: []
 }
+
+/** The approaches an edge has to give way to at the junction at its end. */
+export interface Conflicts {
+    /** Approaches on bigger roads: always have priority */
+    readonly higher: readonly number[]
+    /** Approaches on equally ranked roads: first come, first served */
+    readonly equal: readonly number[]
+}
+
+/** Priority rules at junctions without traffic lights. */
+export interface JunctionControl {
+    /** What `edge` must give way to at its end, or undefined if it has priority there. */
+    conflictsOf(edge: number): Conflicts | undefined
+}
+
+/** No priority rules: vehicles ignore each other at junctions. */
+export const NO_JUNCTION_RULES: JunctionControl = {
+    conflictsOf: () => undefined
+}

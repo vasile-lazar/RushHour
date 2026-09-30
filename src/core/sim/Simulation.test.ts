@@ -7,6 +7,8 @@ import { isDrivable } from './roadRules'
 import { RandomWalkPlanner } from './routing/RandomWalkPlanner'
 import { Simulation, VEHICLE_LENGTH_M } from './Simulation'
 import { TrafficSignals } from './signals/TrafficSignals'
+import { PriorityJunctions } from './junctions/PriorityJunctions'
+import { NO_JUNCTION_RULES, NO_SIGNALS } from './ports'
 
 // Three points 100 m apart; every edge has a 10 m/s speed limit
 const line = twoWayLine([[0, 0], [100, 0], [200, 0]])
@@ -179,5 +181,70 @@ describe('traffic signals', () => {
         expect(waiting).toBeLessThan(199.5) // ...but did not cross it
 
         expect(run(simulation, 12)).toBeGreaterThan(210) // green at t = 34 s: it has gone through
+    })
+})
+
+describe('giving way', () => {
+    // A main road from node 0 to node 2 through the junction at node 1, and a side road from node 3
+    const tJunction = makeGraph(
+        [[-300, 0], [0, 0], [300, 0], [0, -300]],
+        [
+            { from: 0, to: 1, speedLimit: 14, roadClass: 'primary' },
+            { from: 1, to: 2, speedLimit: 14, roadClass: 'primary' },
+            { from: 3, to: 1, speedLimit: 10, roadClass: 'residential' }
+        ]
+    )
+
+    function scenario(rulesOn: boolean): Simulation {
+        const planner = new RandomWalkPlanner(tJunction, isDrivable)
+        const junctions = rulesOn
+            ? new PriorityJunctions(tJunction, isDrivable, NO_SIGNALS)
+            : NO_JUNCTION_RULES
+        const simulation = new Simulation(tJunction, planner, () => 0, new IdmModel(), NO_SIGNALS, junctions)
+        simulation.addVehicle(0, 270, 14) // main road, 30 m from the junction: arrives in about 2 s
+        simulation.addVehicle(2, 282, 9) // side road, 18 m from the junction: would arrive at the same time
+        return simulation
+    }
+
+    it('makes a side-road vehicle wait for traffic on the main road, then go', () => {
+        const simulation = scenario(true)
+        for (let i = 0; i < 20; i++) simulation.step(0.1) // 2 s
+        expect(positions(simulation)[3]).toBeLessThan(-1) // still before the junction (y < 0)
+
+        for (let i = 0; i < 130; i++) simulation.step(0.1) // 15 s in total
+        expect(positions(simulation)[2]).toBeGreaterThan(10) // it went through once the road was clear
+    })
+
+    it('without the rule the side-road vehicle drives straight through', () => {
+        const simulation = scenario(false)
+        for (let i = 0; i < 20; i++) simulation.step(0.1)
+        expect(positions(simulation)[3]).toBeGreaterThan(-1) // already at the junction
+    })
+})
+
+describe('equal roads meeting', () => {
+    it('lets every vehicle through in turn, without gridlock', () => {
+        // Two equal two-way streets crossing at node 0, with 200 m arms
+        const crossing = makeGraph(
+            [[0, 0], [200, 0], [-200, 0], [0, 200], [0, -200]],
+            [
+                { from: 1, to: 0 }, { from: 2, to: 0 }, { from: 3, to: 0 }, { from: 4, to: 0 }, // edges 0-3 arrive
+                { from: 0, to: 1 }, { from: 0, to: 2 }, { from: 0, to: 3 }, { from: 0, to: 4 } // edges 4-7 leave
+            ]
+        )
+        const planner = new RandomWalkPlanner(crossing, isDrivable)
+        const junctions = new PriorityJunctions(crossing, isDrivable, NO_SIGNALS)
+        const simulation = new Simulation(crossing, planner, () => 0, new IdmModel(), NO_SIGNALS, junctions)
+        for (const arrival of [0, 1, 2, 3]) simulation.addVehicle(arrival, 150, 10) // all 50 m away
+
+        for (let i = 0; i < 300; i++) simulation.step(0.1) // 30 s
+
+        const out = positions(simulation)
+        let awayFromCrossing = 0
+        for (let i = 0; i < 4; i++) {
+            if (Math.hypot(out[2 * i], out[2 * i + 1]) > 10) awayFromCrossing++
+        }
+        // A gridlock would leave all four vehicles waiting at the crossing
+        expect(awayFromCrossing).toBeGreaterThanOrEqual(3)
     })
 })
