@@ -35,4 +35,16 @@ describe('RandomWalkPlanner', () => {
         const graph = makeGraph([[0, 0], [10, 0]], [{ from: 0, to: 1, roadClass: 'service' }])
         expect(() => new RandomWalkPlanner(graph, isDrivable)).toThrow('drivable')
     })
+    
+    it('picks start edges in proportion to their length', () => {
+        // one 100 m edge and one 300 m edge, both drivable
+        const graph = makeGraph(
+            [[0, 0], [100, 0], [100, 300]],
+            [{ from: 0, to: 1 }, { from: 1, to: 2 }]
+        )
+        const planner = new RandomWalkPlanner(graph, isDrivable)
+
+        expect(planner.randomStart(() => 0.1)).toBe(0) // 10% of the way: inside the first 25%
+        expect(planner.randomStart(() => 0.5)).toBe(1) // 50% of the way: in the long edge
+    })
 })
