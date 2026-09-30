@@ -20,7 +20,7 @@ const sim = new SimClient()
 let currentGraph: RoadGraph | null = null
 let playing = false
 
-sim.onFrame = (positions) => map.setVehicles(positions)
+sim.onFrame = (positions, speeds) => map.setVehicles(positions, speeds)
 sim.onError = (message) => {
     status.textContent = `Simulation error: ${message}`
     setPlaying(false)

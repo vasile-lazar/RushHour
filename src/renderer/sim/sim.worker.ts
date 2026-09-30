@@ -45,10 +45,15 @@ function tick(): void {
 function sendFrame(): void {
     if (!simulation) return
     const positions = new Float32Array(simulation.vehicleCount * 2)
+    const speeds = new Float32Array(simulation.vehicleCount)
     simulation.writePositions(positions)
+    simulation.writeSpeedRatios(speeds)
     awaitingAck = true
-    // Listing the buffer as "transferred" hands it over without copying
-    scope.postMessage({ type: 'frame', time: simulation.time, positions }, [positions.buffer])
+    // Listing the buffers as "transferred" hands them over without copying
+    scope.postMessage(
+        { type: 'frame', time: simulation.time, positions, speeds },
+        [positions.buffer, speeds.buffer]
+    )
 }
 
 function play(): void {

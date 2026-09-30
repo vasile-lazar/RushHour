@@ -6,7 +6,11 @@ const ROAD_WIDTH_M = 7
 const MIN_ROAD_PX = 0.8
 const MAX_ROAD_PX = 6
 
-const VEHICLE_COLOR = '#ffb703'
+/** Speed relative to the limit, from flowing to stopped. Drawn in this order, so the red ones end up on top. */
+const VEHICLE_COLORS = ['#06d6a0', '#ffd166', '#ef476f']
+const FLOWING_RATIO = 0.7
+const SLOW_RATIO = 0.3
+
 /** Vehicles are drawn about this many meters wide when zoomed in, clamped in pixels when zoomed out. */
 const VEHICLE_SIZE_M = 6
 const VEHICLE_MIN_PX = 2.5
@@ -14,6 +18,12 @@ const VEHICLE_MAX_PX = 8
 
 /** How long the view must stay still before the roads are redrawn in full detail. */
 const SETTLE_MS = 120
+
+function speedBucket(ratio: number): number {
+    if (ratio >= FLOWING_RATIO) return 0
+    if (ratio >= SLOW_RATIO) return 1
+    return 2
+}
 
 interface RoadTier {
     classes: ReadonlySet<string>
@@ -78,6 +88,8 @@ export class MapView {
     private roads: Path2D[] | null = null
     /** Latest vehicle positions from the simulation: x0, y0, x1, y1, ... in world meters */
     private vehicles: Float32Array = new Float32Array(0)
+    /** Each vehicle's speed relative to its road's limit (0 to 1), same order as `vehicles` */
+    private speeds: Float32Array = new Float32Array(0)
     private fitBounds: RoadGraph['bounds'] | null = null
     private drawQueued = false
     private lastPointer: { x: number; y: number } | null = null
@@ -104,14 +116,16 @@ export class MapView {
     setGraph(graph: RoadGraph): void {
         this.roads = buildRoadPaths(graph)
         this.vehicles = new Float32Array(0)
+        this.speeds = new Float32Array(0)
         this.fitBounds = graph.bounds
         this.viewport.fit(graph.bounds)
         this.renderRoadLayer()
         this.requestDraw()
     }
 
-    setVehicles(positions: Float32Array): void {
+    setVehicles(positions: Float32Array, speeds: Float32Array): void {
         this.vehicles = positions
+        this.speeds = speeds
         this.requestDraw()
     }
     // --- drawing ---------------------------------------------------------
@@ -179,20 +193,25 @@ export class MapView {
 
     /** Vehicles change every frame, so they are drawn fresh, always at the exact current view. */
     private drawVehicles(): void {
-        const { ctx, viewport, vehicles } = this
+        const { ctx, viewport, vehicles, speeds } = this
         const dpr = window.devicePixelRatio || 1
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0) // work in CSS pixels
 
         const size = Math.min(VEHICLE_MAX_PX, Math.max(VEHICLE_MIN_PX, viewport.scale * VEHICLE_SIZE_M))
         const half = size / 2
-        ctx.fillStyle = VEHICLE_COLOR
+        const count = Math.min(speeds.length, vehicles.length / 2)
 
-        for (let i = 0; i + 1 < vehicles.length; i += 2) {
-            const x = vehicles[i] * viewport.scale + viewport.offsetX
-            const y = -vehicles[i + 1] * viewport.scale + viewport.offsetY
-            // Skip vehicles outside the window
-            if (x < -size || y < -size || x > viewport.width + size || y > viewport.height + size) continue
-            ctx.fillRect(x - half, y - half, size, size)
+        // One pass per color: switching the fill color for every vehicle would be slow
+        for (let bucket = 0; bucket < VEHICLE_COLORS.length; bucket++) {
+            ctx.fillStyle = VEHICLE_COLORS[bucket]
+            for (let i = 0; i < count; i++) {
+                if (speedBucket(speeds[i]) !== bucket) continue
+                const x = vehicles[2 * i] * viewport.scale + viewport.offsetX
+                const y = -vehicles[2 * i + 1] * viewport.scale + viewport.offsetY
+                // Skip vehicles outside the window
+                if (x < -size || y < -size || x > viewport.width + size || y > viewport.height + size) continue
+                ctx.fillRect(x - half, y - half, size, size)
+            }
         }
     }
     
