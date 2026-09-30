@@ -1,5 +1,6 @@
 # RushHour
 
+[![CI](https://github.com/vasile-lazar/RushHour/actions/workflows/ci.yml/badge.svg)](https://github.com/vasile-lazar/RushHour/actions/workflows/ci.yml)
 <p align="center">
   <img src="https://img.shields.io/badge/Electron-47848F?logo=electron&logoColor=white" alt="Electron" />
   <img src="https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white" alt="TypeScript" />
