@@ -1,3 +1,5 @@
+scratch.ts
+.scratch-cache/
 .idea
 .venv
 .env
