@@ -1,7 +1,12 @@
 ﻿import { pointAlong } from '../graph/geometry'
 import type { RoadGraph } from '../graph/types'
-import type { CarFollowingModel, Rng, RoutePlanner } from './ports'
-
+import {
+    NO_SIGNALS,
+    type CarFollowingModel,
+    type Rng,
+    type RoutePlanner,
+    type SignalControl
+} from './ports'
 /** Vehicle length in meters, used to measure the gap between bumpers */
 export const VEHICLE_LENGTH_M = 4.5
 /** How far ahead a driver looks for vehicles in front and for lower speed limits */
@@ -12,6 +17,8 @@ const MIN_EDGES_AHEAD = 8
 const MAX_BRAKING = 9
 /** Braking used to slow down early for a lower speed limit ahead (m/s²) */
 const SLOWDOWN_BRAKING = 2
+/** Braking a driver accepts when deciding whether to stop for a yellow light (m/s²) */
+const YELLOW_BRAKING = 3
 
 interface Vehicle {
     /** Edge indices to drive along, in order */
@@ -46,12 +53,20 @@ export class Simulation {
     private readonly occupied: number[] = []
     private readonly leader: Leader = { gap: Infinity, speed: 0 }
     private elapsed = 0
+    private readonly signals: SignalControl
 
-    constructor(graph: RoadGraph, planner: RoutePlanner, rng: Rng, model: CarFollowingModel) {
+    constructor(
+        graph: RoadGraph,
+        planner: RoutePlanner,
+        rng: Rng,
+        model: CarFollowingModel,
+        signals: SignalControl = NO_SIGNALS
+    ) {
         this.graph = graph
         this.planner = planner
         this.rng = rng
         this.model = model
+        this.signals = signals
         this.lanes = new Array<Vehicle[] | undefined>(graph.edges.length)
     }
 
@@ -177,14 +192,26 @@ export class Simulation {
         }
     }
 
-    /** Looks along the route for the rear-most vehicle on the next occupied edge. */
+    /**
+     * Looks along the route for whatever the driver must react to first: a signal they
+     * cannot run, or the rear-most vehicle on the next occupied edge. A signal counts
+     * as a stopped vehicle sitting at the stop line.
+     */
     private findLeaderOnRoute(vehicle: Vehicle): boolean {
         const edges = this.graph.edges
+        // Distance from the front bumper to the end of edge `r`
         let distance = edges[vehicle.route[vehicle.routeIndex]].length - vehicle.offset
 
-        for (let r = vehicle.routeIndex + 1; r < vehicle.route.length && distance < LOOKAHEAD_M; r++) {
-            const edgeIndex = vehicle.route[r]
-            const lane = this.lanes[edgeIndex]
+        for (let r = vehicle.routeIndex; r < vehicle.route.length && distance < LOOKAHEAD_M; r++) {
+            if (this.signalBlocks(vehicle.route[r], distance, vehicle.speed)) {
+                this.leader.gap = distance
+                this.leader.speed = 0
+                return true
+            }
+            if (r + 1 >= vehicle.route.length) break
+
+            const nextEdge = vehicle.route[r + 1]
+            const lane = this.lanes[nextEdge]
             if (lane && lane.length > 0) {
                 const rearmost = lane[lane.length - 1]
                 if (rearmost !== vehicle) {
@@ -193,9 +220,19 @@ export class Simulation {
                     return true
                 }
             }
-            distance += edges[edgeIndex].length
+            distance += edges[nextEdge].length
         }
         return false
+    }
+
+    /** Must a vehicle `distance` meters from the end of `edge` stop for the signal there? */
+    private signalBlocks(edge: number, distance: number, speed: number): boolean {
+        const state = this.signals.stateOf(edge, this.elapsed)
+        if (state === 'green') return false
+
+        // Only stop if it can still be done: on yellow comfortably, on red physically possible
+        const braking = state === 'yellow' ? YELLOW_BRAKING : MAX_BRAKING
+        return distance >= (speed * speed) / (2 * braking)
     }
 
     /**

@@ -3,6 +3,8 @@ import type { Rng } from '../util/random'
 
 export type { Rng }
 
+export type SignalState = 'green' | 'yellow' | 'red'
+
 /** Decides whether vehicles are allowed to drive on an edge. */
 export type EdgeFilter = (edge: GraphEdge) => boolean
 
@@ -23,4 +25,17 @@ export interface CarFollowingModel {
      * The result is not limited by what a vehicle can physically brake at.
      */
     acceleration(speed: number, desiredSpeed: number, gap: number, leaderSpeed: number): number
+}
+
+export interface SignalControl {
+    /** State of the signal at the end of `edge` ('green' if that edge has no signal). */
+    stateOf(edge: number, time: number): SignalState
+    /** Edges whose end is controlled by a signal. */
+    readonly approaches: readonly number[]
+}
+
+/** No signals anywhere. */
+export const NO_SIGNALS: SignalControl = {
+    stateOf: () => 'green',
+    approaches: []
 }

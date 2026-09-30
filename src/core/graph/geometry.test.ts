@@ -1,5 +1,5 @@
 ﻿import { describe, expect, it } from 'vitest'
-import { pointAlong, polylineLength, reversePolyline } from './geometry'
+import {endHeading, pointAlong, polylineLength, reversePolyline} from './geometry'
 
 // An L-shaped road: 10 m east, then 5 m north
 const road = [0, 0, 10, 0, 10, 5]
@@ -13,6 +13,18 @@ describe('polylineLength', () => {
 describe('reversePolyline', () => {
     it('reverses point order but keeps x/y pairs', () => {
         expect(reversePolyline(road)).toEqual([10, 5, 10, 0, 0, 0])
+    })
+})
+
+describe('endHeading', () => {
+    it('gives the direction of the last segment', () => {
+        expect(endHeading([0, 0, 10, 0])).toBeCloseTo(0)
+        expect(endHeading([0, 0, 0, 10])).toBeCloseTo(Math.PI / 2)
+        expect(endHeading([0, 0, 10, 0, 10, 5])).toBeCloseTo(Math.PI / 2) // the corner counts
+    })
+
+    it('skips a zero-length last segment', () => {
+        expect(endHeading([0, 0, 10, 0, 10, 0])).toBeCloseTo(0)
     })
 })
 
@@ -34,3 +46,4 @@ describe('pointAlong', () => {
         expect([out[0], out[1]]).toEqual([10, 5])
     })
 })
+
