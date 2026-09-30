@@ -1,15 +1,36 @@
 ﻿import { pointAlong } from '../graph/geometry'
 import type { RoadGraph } from '../graph/types'
-import type { Rng, RoutePlanner } from './ports'
+import type { CarFollowingModel, Rng, RoutePlanner } from './ports'
+
+/** Vehicle length in meters, used to measure the gap between bumpers */
+export const VEHICLE_LENGTH_M = 4.5
+/** How far ahead a driver looks for vehicles in front and for lower speed limits */
+const LOOKAHEAD_M = 150
+/** Keep at least this many edges planned ahead, so drivers can see what is coming */
+const MIN_EDGES_AHEAD = 8
+/** The hardest a vehicle can physically brake (m/s²) */
+const MAX_BRAKING = 9
+/** Braking used to slow down early for a lower speed limit ahead (m/s²) */
+const SLOWDOWN_BRAKING = 2
 
 interface Vehicle {
     /** Edge indices to drive along, in order */
     route: number[]
     /** Which edge of the route the vehicle is on */
     routeIndex: number
-    /** Meters travelled along the current edge */
+    /** Position of the front bumper: meters travelled along the current edge */
     offset: number
     /** Current speed in m/s */
+    speed: number
+    /** Acceleration decided for the current step */
+    acceleration: number
+    /** Fastest speed allowed right now, given lower speed limits coming up */
+    speedCap: number
+}
+
+/** Result of a leader search, reused to avoid creating an object per vehicle per step */
+interface Leader {
+    gap: number
     speed: number
 }
 
@@ -17,13 +38,21 @@ export class Simulation {
     private readonly graph: RoadGraph
     private readonly planner: RoutePlanner
     private readonly rng: Rng
+    private readonly model: CarFollowingModel
     private readonly vehicles: Vehicle[] = []
+    /** Per edge: the vehicles on it, front-most first. Rebuilt every step. */
+    private readonly lanes: Array<Vehicle[] | undefined>
+    /** Edges that currently hold at least one vehicle */
+    private readonly occupied: number[] = []
+    private readonly leader: Leader = { gap: Infinity, speed: 0 }
     private elapsed = 0
 
-    constructor(graph: RoadGraph, planner: RoutePlanner, rng: Rng) {
+    constructor(graph: RoadGraph, planner: RoutePlanner, rng: Rng, model: CarFollowingModel) {
         this.graph = graph
         this.planner = planner
         this.rng = rng
+        this.model = model
+        this.lanes = new Array<Vehicle[] | undefined>(graph.edges.length)
     }
 
     get vehicleCount(): number {
@@ -37,15 +66,39 @@ export class Simulation {
 
     spawn(count: number): void {
         for (let i = 0; i < count; i++) {
-            const vehicle: Vehicle = { route: [], routeIndex: 0, offset: 0, speed: 0 }
+            const vehicle: Vehicle = {
+                route: [],
+                routeIndex: 0,
+                offset: 0,
+                speed: 0,
+                acceleration: 0,
+                speedCap: 0
+            }
             this.placeRandomly(vehicle)
             this.vehicles.push(vehicle)
         }
     }
 
+    /** Puts a vehicle at an exact spot. Handy for tests and hand-made scenarios. */
+    addVehicle(edgeIndex: number, offset: number, speed?: number): void {
+        const edge = this.graph.edges[edgeIndex]
+        this.vehicles.push({
+            route: this.planner.plan(edgeIndex, this.rng),
+            routeIndex: 0,
+            offset,
+            speed: speed ?? edge.speedLimit,
+            acceleration: 0,
+            speedCap: edge.speedLimit
+        })
+    }
+
     /** Advances the whole simulation by `dt` seconds. */
     step(dt: number): void {
-        for (const vehicle of this.vehicles) this.advance(vehicle, dt)
+        this.rebuildLanes()
+        // Everyone decides based on the same snapshot...
+        this.decide()
+        // ...and only then does everyone move, so the update order cannot matter
+        for (const vehicle of this.vehicles) this.move(vehicle, dt)
         this.elapsed += dt
     }
 
@@ -59,32 +112,141 @@ export class Simulation {
         }
     }
 
-    private advance(vehicle: Vehicle, dt: number): void {
+    /** Writes each vehicle's speed relative to its road's limit: 0 = stopped, 1 = at the limit. */
+    writeSpeedRatios(out: Float32Array): void {
         const edges = this.graph.edges
-        let edge = edges[vehicle.route[vehicle.routeIndex]]
-        vehicle.speed = edge.speedLimit
+        for (let i = 0; i < this.vehicles.length; i++) {
+            const vehicle = this.vehicles[i]
+            const limit = Math.max(edges[vehicle.route[vehicle.routeIndex]].speedLimit, 0.1)
+            out[i] = Math.min(1, vehicle.speed / limit)
+        }
+    }
+
+    /** Groups vehicles by edge and orders each group front to back. */
+    private rebuildLanes(): void {
+        for (const edge of this.occupied) (this.lanes[edge] as Vehicle[]).length = 0
+        this.occupied.length = 0
+
+        for (const vehicle of this.vehicles) {
+            const edge = vehicle.route[vehicle.routeIndex]
+            let lane = this.lanes[edge]
+            if (!lane) {
+                lane = []
+                this.lanes[edge] = lane
+            }
+            if (lane.length === 0) this.occupied.push(edge)
+            lane.push(vehicle)
+        }
+
+        for (const edge of this.occupied) {
+            ;(this.lanes[edge] as Vehicle[]).sort((a, b) => b.offset - a.offset)
+        }
+    }
+
+    /** Phase 1: every vehicle looks around and decides its acceleration. Nobody moves yet. */
+    private decide(): void {
+        const edges = this.graph.edges
+
+        for (const edgeIndex of this.occupied) {
+            const lane = this.lanes[edgeIndex] as Vehicle[]
+            const edge = edges[edgeIndex]
+
+            for (let i = 0; i < lane.length; i++) {
+                const vehicle = lane[i]
+                this.ensureRoute(vehicle)
+
+                let hasLeader: boolean
+                if (i > 0) {
+                    const ahead = lane[i - 1] // the vehicle just in front on the same edge
+                    this.leader.gap = ahead.offset - VEHICLE_LENGTH_M - vehicle.offset
+                    this.leader.speed = ahead.speed
+                    hasLeader = true
+                } else {
+                    hasLeader = this.findLeaderOnRoute(vehicle) // front of its edge: look further along the route
+                }
+
+                const wanted = this.model.acceleration(
+                    vehicle.speed,
+                    edge.speedLimit,
+                    hasLeader ? this.leader.gap : Infinity,
+                    hasLeader ? this.leader.speed : 0
+                )
+                vehicle.acceleration = Math.max(-MAX_BRAKING, wanted)
+                vehicle.speedCap = this.speedCap(vehicle)
+            }
+        }
+    }
+
+    /** Looks along the route for the rear-most vehicle on the next occupied edge. */
+    private findLeaderOnRoute(vehicle: Vehicle): boolean {
+        const edges = this.graph.edges
+        let distance = edges[vehicle.route[vehicle.routeIndex]].length - vehicle.offset
+
+        for (let r = vehicle.routeIndex + 1; r < vehicle.route.length && distance < LOOKAHEAD_M; r++) {
+            const edgeIndex = vehicle.route[r]
+            const lane = this.lanes[edgeIndex]
+            if (lane && lane.length > 0) {
+                const rearmost = lane[lane.length - 1]
+                if (rearmost !== vehicle) {
+                    this.leader.gap = distance + rearmost.offset - VEHICLE_LENGTH_M
+                    this.leader.speed = rearmost.speed
+                    return true
+                }
+            }
+            distance += edges[edgeIndex].length
+        }
+        return false
+    }
+
+    /**
+     * The highest speed from which the vehicle can still slow down comfortably
+     * to every speed limit within sight: sqrt(limit² + 2 * braking * distance).
+     */
+    private speedCap(vehicle: Vehicle): number {
+        const edges = this.graph.edges
+        const current = edges[vehicle.route[vehicle.routeIndex]]
+        let cap = current.speedLimit
+        let distance = current.length - vehicle.offset
+
+        for (let r = vehicle.routeIndex + 1; r < vehicle.route.length && distance < LOOKAHEAD_M; r++) {
+            const next = edges[vehicle.route[r]]
+            cap = Math.min(cap, Math.sqrt(next.speedLimit ** 2 + 2 * SLOWDOWN_BRAKING * distance))
+            distance += next.length
+        }
+        return cap
+    }
+
+    /** Plans more road when the route is running short. Does nothing at a true dead end. */
+    private ensureRoute(vehicle: Vehicle): void {
+        if (vehicle.route.length - vehicle.routeIndex > MIN_EDGES_AHEAD) return
+
+        const last = vehicle.route[vehicle.route.length - 1]
+        const more = this.planner.plan(last, this.rng)
+        if (more.length < 2) return // the road ends here: nothing to add
+
+        // Forget the part already driven; more[0] is the edge the route already ends with
+        vehicle.route = vehicle.route.slice(vehicle.routeIndex).concat(more.slice(1))
+        vehicle.routeIndex = 0
+    }
+
+    /** Phase 2: apply the decided acceleration and move the vehicle. */
+    private move(vehicle: Vehicle, dt: number): void {
+        const edges = this.graph.edges
+        const accelerated = Math.max(0, vehicle.speed + vehicle.acceleration * dt)
+        vehicle.speed = Math.min(accelerated, vehicle.speedCap)
         vehicle.offset += vehicle.speed * dt
 
+        let edge = edges[vehicle.route[vehicle.routeIndex]]
         // Possibly cross several short edges in one step
         while (vehicle.offset >= edge.length) {
             vehicle.offset -= edge.length
             vehicle.routeIndex++
-            if (vehicle.routeIndex >= vehicle.route.length && !this.extendRoute(vehicle)) {
-                this.placeRandomly(vehicle) // nowhere left to go: reappear somewhere else
+            if (vehicle.routeIndex >= vehicle.route.length) {
+                this.placeRandomly(vehicle) // the road ended: reappear somewhere else
                 return
             }
             edge = edges[vehicle.route[vehicle.routeIndex]]
         }
-    }
-
-    /** Plans more road beyond the end of the route. Returns false at a true dead end. */
-    private extendRoute(vehicle: Vehicle): boolean {
-        const last = vehicle.route[vehicle.route.length - 1]
-        const next = this.planner.plan(last, this.rng)
-        if (next.length < 2) return false
-        vehicle.route = next // next[0] is the edge we just finished
-        vehicle.routeIndex = 1
-        return true
     }
 
     private placeRandomly(vehicle: Vehicle): void {
@@ -94,5 +256,7 @@ export class Simulation {
         vehicle.routeIndex = 0
         vehicle.offset = this.rng() * edge.length
         vehicle.speed = edge.speedLimit
+        vehicle.acceleration = 0
+        vehicle.speedCap = edge.speedLimit
     }
 }

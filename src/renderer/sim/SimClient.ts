@@ -6,14 +6,14 @@ export class SimClient {
         type: 'module'
     })
 
-    onFrame: ((positions: Float32Array, time: number) => void) | null = null
+    onFrame: ((positions: Float32Array, speeds: Float32Array, time: number) => void) | null = null
     onError: ((message: string) => void) | null = null
 
     constructor() {
         this.worker.onmessage = (event: MessageEvent<FromWorker>) => {
             const message = event.data
             if (message.type === 'frame') {
-                this.onFrame?.(message.positions, message.time)
+                this.onFrame?.(message.positions, message.speeds, message.time)
                 this.send({ type: 'ack' })
             } else {
                 this.onError?.(message.message)

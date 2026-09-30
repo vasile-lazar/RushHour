@@ -13,14 +13,32 @@ const countInput = document.getElementById('vehicle-count') as HTMLInputElement
 const playButton = document.getElementById('play-button') as HTMLButtonElement
 const speedSelect = document.getElementById('speed-select') as HTMLSelectElement
 const status = document.getElementById('status') as HTMLSpanElement
+const achieved = document.getElementById('achieved') as HTMLSpanElement
 
 const map = new MapView(document.getElementById('map') as HTMLCanvasElement)
 const sim = new SimClient()
 
 let currentGraph: RoadGraph | null = null
 let playing = false
+let measureWall = 0
+let measureSimTime = 0
 
-sim.onFrame = (positions) => map.setVehicles(positions)
+sim.onFrame = (positions, speeds, time) => {
+    map.setVehicles(positions, speeds)
+
+    // Once a second, show how fast the simulation really runs compared to real time
+    const now = performance.now()
+    if (measureWall === 0 || time < measureSimTime) {
+        measureWall = now // first frame, or a new simulation just started
+        measureSimTime = time
+    }
+    if (now - measureWall >= 1000) {
+        const speedup = (time - measureSimTime) / ((now - measureWall) / 1000)
+        achieved.textContent = `running at ${speedup.toFixed(1)}×`
+        measureWall = now
+        measureSimTime = time
+    }
+}
 sim.onError = (message) => {
     status.textContent = `Simulation error: ${message}`
     setPlaying(false)

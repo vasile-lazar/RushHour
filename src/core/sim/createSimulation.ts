@@ -1,6 +1,7 @@
 ﻿import type { RoadGraph } from '../graph/types'
 import { createRng } from '../util/random'
-import type { EdgeFilter } from './ports'
+import { IdmModel } from './models/Idm'
+import type { CarFollowingModel, EdgeFilter } from './ports'
 import { isDrivable } from './roadRules'
 import { RandomWalkPlanner } from './routing/RandomWalkPlanner'
 import { Simulation } from './Simulation'
@@ -10,12 +11,13 @@ export interface SimulationOptions {
     /** Same seed, same simulation */
     seed: number
     canDrive?: EdgeFilter
+    model?: CarFollowingModel
 }
 
 export function createSimulation(graph: RoadGraph, options: SimulationOptions): Simulation {
     const rng = createRng(options.seed)
     const planner = new RandomWalkPlanner(graph, options.canDrive ?? isDrivable)
-    const simulation = new Simulation(graph, planner, rng)
+    const simulation = new Simulation(graph, planner, rng, options.model ?? new IdmModel())
     simulation.spawn(options.vehicleCount)
     return simulation
 }

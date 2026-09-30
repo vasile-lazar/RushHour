@@ -4,6 +4,8 @@ import type { Simulation } from '@core/sim/Simulation'
 import { planSteps } from '@core/sim/stepPlan'
 import type { FromWorker, ToWorker } from '@shared/protocol'
 
+const COMPUTE_BUDGET_MS = 12
+
 // The DOM typings and worker typings clash, so describe just the parts we use
 interface WorkerScope {
     onmessage: ((event: MessageEvent<ToWorker>) => void) | null
@@ -33,8 +35,12 @@ function tick(): void {
     lastTick = started
 
     const { steps, dt } = planSteps(realSeconds * timeScale)
-    for (let i = 0; i < steps; i++) simulation.step(dt)
-
+    for (let i = 0; i < steps; i++) {
+        simulation.step(dt)
+        // Out of time: skip the rest. The simulation just runs slower than requested.
+        if (performance.now() - started > COMPUTE_BUDGET_MS) break
+    }
+    
     if (!awaitingAck) sendFrame()
 
     // Schedule the next tick after this one finished, so ticks never pile up
@@ -45,10 +51,15 @@ function tick(): void {
 function sendFrame(): void {
     if (!simulation) return
     const positions = new Float32Array(simulation.vehicleCount * 2)
+    const speeds = new Float32Array(simulation.vehicleCount)
     simulation.writePositions(positions)
+    simulation.writeSpeedRatios(speeds)
     awaitingAck = true
-    // Listing the buffer as "transferred" hands it over without copying
-    scope.postMessage({ type: 'frame', time: simulation.time, positions }, [positions.buffer])
+    // Listing the buffers as "transferred" hands them over without copying
+    scope.postMessage(
+        { type: 'frame', time: simulation.time, positions, speeds },
+        [positions.buffer, speeds.buffer]
+    )
 }
 
 function play(): void {
