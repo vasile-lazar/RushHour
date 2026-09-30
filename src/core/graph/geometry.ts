@@ -17,6 +17,15 @@ export function reversePolyline(points: number[]): number[] {
     return reversed
 }
 
+/** Direction of travel (radians, counter-clockwise from east) at the end of a polyline. */
+export function endHeading(points: number[]): number {
+    for (let i = points.length - 4; i >= 0; i -= 2) {
+        const dx = points[i + 2] - points[i]
+        const dy = points[i + 3] - points[i + 1]
+        if (dx !== 0 || dy !== 0) return Math.atan2(dy, dx)
+    }
+    return 0
+}
 
 /**
  * Writes the point `distance` meters along the polyline into

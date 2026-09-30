@@ -6,6 +6,7 @@ import { IdmModel } from './models/Idm'
 import { isDrivable } from './roadRules'
 import { RandomWalkPlanner } from './routing/RandomWalkPlanner'
 import { Simulation, VEHICLE_LENGTH_M } from './Simulation'
+import { TrafficSignals } from './signals/TrafficSignals'
 
 // Three points 100 m apart; every edge has a 10 m/s speed limit
 const line = twoWayLine([[0, 0], [100, 0], [200, 0]])
@@ -140,5 +141,43 @@ describe('createSimulation', () => {
 
     it('differs for different seeds', () => {
         expect(run(7)).not.toEqual(run(8))
+    })
+})
+
+describe('traffic signals', () => {
+    // A road from node 0 to node 2, crossed at node 1 by a side road arriving from node 3
+    const junction = makeGraph(
+        [[0, 0], [200, 0], [400, 0], [200, 100]],
+        [{ from: 0, to: 1 }, { from: 1, to: 2 }, { from: 3, to: 1 }],
+        [1]
+    )
+
+    /** offsetFraction 0: the main road (edge 0) starts green. 0.5: it starts red for 34 s. */
+    function withSignals(offsetFraction: number): Simulation {
+        const signals = new TrafficSignals(junction, isDrivable, () => offsetFraction)
+        const planner = new RandomWalkPlanner(junction, isDrivable)
+        const simulation = new Simulation(junction, planner, () => 0, new IdmModel(), signals)
+        simulation.addVehicle(0, 0, 10) // on the main road, at its 10 m/s limit
+        return simulation
+    }
+
+    function run(simulation: Simulation, seconds: number): number {
+        for (let i = 0; i < seconds * 10; i++) simulation.step(0.1)
+        return positions(simulation)[0]
+    }
+
+    it('drives straight through a green light', () => {
+        // green for the first 30 s, and the vehicle reaches the junction after 20 s
+        expect(run(withSignals(0), 25)).toBeGreaterThan(240)
+    })
+
+    it('stops in front of a red light, then goes when it turns green', () => {
+        const simulation = withSignals(0.5) // red until t = 34 s
+
+        const waiting = run(simulation, 32)
+        expect(waiting).toBeGreaterThan(190) // it came right up to the line...
+        expect(waiting).toBeLessThan(199.5) // ...but did not cross it
+
+        expect(run(simulation, 12)).toBeGreaterThan(210) // green at t = 34 s: it has gone through
     })
 })

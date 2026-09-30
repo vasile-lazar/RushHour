@@ -8,8 +8,12 @@ interface EdgeSpec {
 }
 
 /** Builds a small RoadGraph for tests, with a straight edge for each spec. */
-export function makeGraph(points: Array<[number, number]>, specs: EdgeSpec[]): RoadGraph {
-    const nodes = points.map(([x, y]) => ({ x, y, hasSignal: false }))
+export function makeGraph(
+    points: Array<[number, number]>,
+    specs: EdgeSpec[],
+    signalNodes: number[] = []
+): RoadGraph {
+    const nodes = points.map(([x, y], index) => ({ x, y, hasSignal: signalNodes.includes(index) }))
     const edges: GraphEdge[] = specs.map((spec) => {
         const a = nodes[spec.from]
         const b = nodes[spec.to]
