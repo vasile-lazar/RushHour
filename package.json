@@ -1,21 +1,25 @@
 {
   "name": "rushhour",
-  "version": "1.0.0",
+  "productName": "RushHour",
+  "version": "0.1.0",
+  "author": "Vasile Lazar",
   "description": "",
   "main": "./out/main/index.js",
   "scripts": {
+    "dist": "electron-vite build && electron-builder --publish never",
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "preview": "electron-vite preview"
   },
   "keywords": [],
-  "author": "",
   "license": "MIT",
   "type": "commonjs",
   "devDependencies": {
     "@types/node": "^26.6.3",
     "electron": "^44.4.5",
+    "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
     "typescript": "^7.0.2",
     "vite": "^7.3.6",

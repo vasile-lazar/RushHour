@@ -47,6 +47,18 @@ The target feature set for v1.0:
 - Map data: OpenStreetMap via Nominatim and Overpass
 - Testing: Vitest
 
+## Install
+
+Download the installer for your system from the [Releases](https://github.com/vasile-lazar/RushHour/releases) page.
+
+| System | File | Notes |
+|---|---|---|
+| Windows | `RushHour-x.y.z-win-setup.exe` | Windows may show an "unknown publisher" warning. Choose *More info*, then *Run anyway* |
+| macOS (Apple Silicon) | `RushHour-x.y.z-mac.dmg` | The app is not signed. If macOS says it is damaged, run `xattr -cr /Applications/RushHour.app` once |
+| Linux | `RushHour-x.y.z-linux.AppImage` | Make it executable (`chmod +x`), then run it |
+
+The installers are not code-signed, since that requires paid certificates.
+
 ## Quick Start
 
 ### Prerequisites
