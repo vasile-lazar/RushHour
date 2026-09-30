@@ -1,0 +1,26 @@
+appId: io.github.vasile-lazar.rushhour
+productName: RushHour
+directories:
+  output: release
+files:
+  - out/**/*
+
+win:
+  target: nsis
+  artifactName: ${productName}-${version}-win-setup.${ext}
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+
+mac:
+  target: dmg
+  artifactName: ${productName}-${version}-mac.${ext}
+
+linux:
+  target: AppImage
+  category: Utility
+  artifactName: ${productName}-${version}-linux.${ext}
+
+publish:
+  provider: github
+  releaseType: draft
