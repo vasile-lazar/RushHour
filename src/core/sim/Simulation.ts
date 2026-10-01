@@ -288,10 +288,30 @@ export class Simulation {
         waitingEdge: number,
         equalRank: boolean
     ): boolean {
-        const lane = this.lanes[other]
+        if (this.frontBusy(other, 0, gap, waiting, waitingEdge, equalRank)) return true
+
+        // Ring edges of a roundabout are short, so the vehicle about to arrive is often
+        // still on the edge before: watch that one too
+        const before = this.junctions.upstreamOf(other)
+        return (
+            before >= 0 &&
+            this.frontBusy(before, this.graph.edges[other].length, gap, waiting, waitingEdge, equalRank)
+        )
+    }
+
+    /** `extra` is the distance from the end of `edge` to the junction, if it is not right there. */
+    private frontBusy(
+        edge: number,
+        extra: number,
+        gap: number,
+        waiting: Vehicle,
+        waitingEdge: number,
+        equalRank: boolean
+    ): boolean {
+        const lane = this.lanes[edge]
         if (!lane || lane.length === 0) return false
         const front = lane[0]
-        const distance = this.graph.edges[other].length - front.offset
+        const distance = this.graph.edges[edge].length - front.offset + extra
 
         if (front.speed > STANDING_MS) {
             // Moving: it is in the way if it is at the junction already or will be there soon
@@ -300,7 +320,7 @@ export class Simulation {
         if (distance > NEAR_JUNCTION_M) return false // a queue further back, not about to enter
         if (!equalRank) return true // someone with priority is waiting right at the junction
         // Equal roads and both waiting: first come, first served (lower edge index breaks a tie)
-        return front.waited > waiting.waited || (front.waited === waiting.waited && other < waitingEdge)
+        return front.waited > waiting.waited || (front.waited === waiting.waited && edge < waitingEdge)
     }
 
     /** Must a vehicle about to turn across the road wait for oncoming traffic? */

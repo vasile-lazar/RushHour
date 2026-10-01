@@ -2,7 +2,7 @@
 import type { Bounds, GraphEdge, GraphNode, RoadGraph } from '@core/graph/types'
 import type { OverpassNode, OverpassResponse, OverpassWay } from './OverpassClient'
 import { createProjection, type Point } from './Projection'
-import { defaultSpeedLimit, directionOf, lanesPerDirection, parseSpeedLimit } from './RoadTags'
+import { defaultSpeedLimit, directionOf, lanesPerDirection, parseSpeedLimit, ROUNDABOUT_SPEED_MS } from './RoadTags'
 
 const SIGNAL_TAG = 'traffic_signals'
 /** Edges shorter than this are degenerate (duplicate points) and would confuse the simulation. */
@@ -68,9 +68,11 @@ export function buildGraph(name: string, osm: OverpassResponse): RoadGraph {
     for (const way of ways) {
         const roadClass = way.tags?.highway ?? 'unclassified'
         const direction = directionOf(way.tags)
-        const speedLimit = parseSpeedLimit(way.tags?.maxspeed) ?? defaultSpeedLimit(roadClass)
+        const roundabout = way.tags?.junction === 'roundabout'
+        const posted = parseSpeedLimit(way.tags?.maxspeed) ?? defaultSpeedLimit(roadClass)
+        const speedLimit = roundabout ? Math.min(posted, ROUNDABOUT_SPEED_MS) : posted
         const lanes = lanesPerDirection(way.tags?.lanes, direction)
-
+        
         let segmentStart = 0
         for (let i = 1; i < way.nodes.length; i++) {
             const isLast = i === way.nodes.length - 1
@@ -89,8 +91,14 @@ export function buildGraph(name: string, osm: OverpassResponse): RoadGraph {
 
             const from = graphNodeFor(ids[0])
             const to = graphNodeFor(ids[ids.length - 1])
-            const shared = { length, speedLimit, lanes, roadClass }
-
+            const shared = {
+                length,
+                speedLimit,
+                lanes,
+                roadClass,
+                ...(roundabout ? { roundabout: true } : {})
+            }
+            
             if (direction !== 'backward') {
                 edges.push({ ...shared, from, to, geometry })
             }

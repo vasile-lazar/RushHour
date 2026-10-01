@@ -86,4 +86,22 @@ describe('buildGraph', () => {
     it('throws when there are no roads', () => {
         expect(() => buildGraph('Nowhere', { elements: [] })).toThrow('No drivable roads')
     })
+
+    it('flags roundabout edges and caps their speed', () => {
+        const ring = buildGraph('test', {
+            elements: [
+                node(1, 47, 28),
+                node(2, 47.001, 28),
+                way(10, [1, 2], { highway: 'primary', junction: 'roundabout' })
+            ]
+        })
+        expect(ring.edges).toHaveLength(1) // roundabouts are one-way
+        expect(ring.edges[0].roundabout).toBe(true)
+        expect(ring.edges[0].speedLimit).toBeCloseTo(30 / 3.6, 5) // a primary road would be 60 km/h
+
+        const road = buildGraph('test', {
+            elements: [node(1, 47, 28), node(2, 47.001, 28), way(10, [1, 2], { highway: 'primary' })]
+        })
+        expect(road.edges[0].roundabout).toBeUndefined()
+    })
 })

@@ -3,7 +3,8 @@ export type Direction = 'forward' | 'backward' | 'both'
 
 const KMH_TO_MS = 1 / 3.6
 const MPH_TO_MS = 1.609344 * KMH_TO_MS
-
+/** Speed on a roundabout ring (m/s): nobody drives round at the speed of the road leading to it. */
+export const ROUNDABOUT_SPEED_MS = 30 * KMH_TO_MS
 
 /** Parses "50" or "30 mph" into m/s. Returns null for anything else (e.g. "RO:urban"). */
 export function parseSpeedLimit(value: string | undefined): number | null {
