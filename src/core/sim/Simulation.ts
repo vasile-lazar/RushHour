@@ -3,11 +3,13 @@ import type { RoadGraph } from '../graph/types'
 import {
     NO_JUNCTION_RULES,
     NO_SIGNALS,
+    NO_TURN_RULES,
     type CarFollowingModel,
     type JunctionControl,
     type Rng,
     type RoutePlanner,
-    type SignalControl
+    type SignalControl,
+    type TurnRules
 } from './ports'
 
 /** Vehicle length in meters, used to measure the gap between bumpers */
@@ -37,6 +39,8 @@ const FORCE_AFTER_S = 25
 const STANDING_MS = 0.5
 /** A vehicle this close to the junction is about to enter it (m) */
 const NEAR_JUNCTION_M = 10
+/** Speed a vehicle slows down to before a sharp turn (m/s) */
+const TURN_SPEED_MS = 6
 
 interface Vehicle {
     /** Edge indices to drive along, in order */
@@ -75,6 +79,7 @@ export class Simulation {
     private elapsed = 0
     private readonly signals: SignalControl
     private readonly junctions: JunctionControl
+    private readonly turns: TurnRules
 
     constructor(
         graph: RoadGraph,
@@ -82,7 +87,8 @@ export class Simulation {
         rng: Rng,
         model: CarFollowingModel,
         signals: SignalControl = NO_SIGNALS,
-        junctions: JunctionControl = NO_JUNCTION_RULES
+        junctions: JunctionControl = NO_JUNCTION_RULES,
+        turns: TurnRules = NO_TURN_RULES
     ) {
         this.graph = graph
         this.planner = planner
@@ -90,6 +96,7 @@ export class Simulation {
         this.model = model
         this.signals = signals
         this.junctions = junctions
+        this.turns = turns
         this.lanes = new Array<Vehicle[] | undefined>(graph.edges.length)
     }
 
@@ -231,7 +238,8 @@ export class Simulation {
             const edgeIndex = vehicle.route[r]
             if (
                 this.signalBlocks(edgeIndex, distance, vehicle.speed) ||
-                this.junctionBlocks(vehicle, edgeIndex, distance)
+                this.junctionBlocks(vehicle, edgeIndex, distance) ||
+                this.turnBlocks(vehicle, r, distance)
             ) {
                 this.leader.gap = distance
                 this.leader.speed = 0
@@ -295,6 +303,34 @@ export class Simulation {
         return front.waited > waiting.waited || (front.waited === waiting.waited && other < waitingEdge)
     }
 
+    /** Must a vehicle about to turn across the road wait for oncoming traffic? */
+    private turnBlocks(vehicle: Vehicle, r: number, distance: number): boolean {
+        const nextIndex = vehicle.route[r + 1]
+        if (nextIndex === undefined) return false
+        const edgeIndex = vehicle.route[r]
+        if (!this.turns.crossesOncoming(edgeIndex, nextIndex)) return false
+
+        if (distance > YIELD_DECISION_M || vehicle.waited > FORCE_AFTER_S) return false
+        // Too close and too fast to stop any more: the vehicle is committed
+        if (distance < (vehicle.speed * vehicle.speed) / (2 * MAX_BRAKING)) return false
+
+        const gap = vehicle.waited > PATIENCE_S ? PATIENT_GAP_S : CRITICAL_GAP_S
+        for (const other of this.turns.oncoming(edgeIndex)) {
+            const lane = this.lanes[other]
+            if (!lane || lane.length === 0) continue
+            const front = lane[0]
+            if (front.speed <= STANDING_MS) continue // standing still: not about to enter
+
+            // Oncoming traffic that turns left as well passes on the other side
+            const frontNext = front.route[front.routeIndex + 1]
+            if (frontNext !== undefined && this.turns.crossesOncoming(other, frontNext)) continue
+
+            const toJunction = this.graph.edges[other].length - front.offset
+            if (toJunction < NEAR_JUNCTION_M || toJunction / front.speed < gap) return true
+        }
+        return false
+    }
+    
     /** Must a vehicle `distance` meters from the end of `edge` stop for the signal there? */
     private signalBlocks(edge: number, distance: number, speed: number): boolean {
         const state = this.signals.stateOf(edge, this.elapsed)
@@ -319,9 +355,13 @@ export class Simulation {
         cap = Math.min(cap, this.junctionCap(currentIndex, distance))
 
         for (let r = vehicle.routeIndex + 1; r < vehicle.route.length && distance < LOOKAHEAD_M; r++) {
+            const previousIndex = vehicle.route[r - 1]
             const edgeIndex = vehicle.route[r]
             const next = edges[edgeIndex]
             cap = Math.min(cap, Math.sqrt(next.speedLimit ** 2 + 2 * SLOWDOWN_BRAKING * distance))
+            if (this.turns.isSharpTurn(previousIndex, edgeIndex)) {
+                cap = Math.min(cap, Math.sqrt(TURN_SPEED_MS ** 2 + 2 * SLOWDOWN_BRAKING * distance))
+            }
             distance += next.length
             cap = Math.min(cap, this.junctionCap(edgeIndex, distance))
         }

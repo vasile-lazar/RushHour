@@ -8,7 +8,8 @@ import { RandomWalkPlanner } from './routing/RandomWalkPlanner'
 import { Simulation, VEHICLE_LENGTH_M } from './Simulation'
 import { TrafficSignals } from './signals/TrafficSignals'
 import { PriorityJunctions } from './junctions/PriorityJunctions'
-import { NO_JUNCTION_RULES, NO_SIGNALS } from './ports'
+import {NO_JUNCTION_RULES, NO_SIGNALS, NO_TURN_RULES} from './ports'
+import {Turns} from "@core/sim/junctions/Turns";
 
 // Three points 100 m apart; every edge has a 10 m/s speed limit
 const line = twoWayLine([[0, 0], [100, 0], [200, 0]])
@@ -246,5 +247,55 @@ describe('equal roads meeting', () => {
         }
         // A gridlock would leave all four vehicles waiting at the crossing
         expect(awayFromCrossing).toBeGreaterThanOrEqual(3)
+    })
+})
+
+describe('turning left', () => {
+    // A crossing of two-way streets at node 0. Vehicle A arrives from the west and turns left
+    // (north). Vehicle B arrives from the east and drives straight on (west).
+    const crossing = makeGraph(
+        [[0, 0], [-300, 0], [300, 0], [0, 300], [0, -300]],
+        [
+            { from: 1, to: 0 }, // 0: arrives from the west
+            { from: 2, to: 0 }, // 1: arrives from the east
+            { from: 3, to: 0 }, // 2: arrives from the north
+            { from: 4, to: 0 }, // 3: arrives from the south
+            { from: 0, to: 1 }, // 4: leaves to the west
+            { from: 0, to: 3 }, // 5: leaves to the north
+            { from: 0, to: 2 }, // 6: leaves to the east
+            { from: 0, to: 4 } // 7: leaves to the south
+        ]
+    )
+
+    function scenario(rulesOn: boolean): Simulation {
+        const planner = new RandomWalkPlanner(crossing, isDrivable)
+        const turns = rulesOn ? new Turns(crossing) : NO_TURN_RULES
+        const simulation = new Simulation(
+            crossing,
+            planner,
+            () => 0,
+            new IdmModel(),
+            NO_SIGNALS,
+            NO_JUNCTION_RULES,
+            turns
+        )
+        simulation.addVehicle(0, 270, 10) // A: 30 m from the crossing, will turn left
+        simulation.addVehicle(1, 270, 10) // B: oncoming, 30 m away, will go straight
+        return simulation
+    }
+
+    it('makes a left-turning vehicle wait for oncoming traffic, then turn', () => {
+        const simulation = scenario(true)
+        for (let i = 0; i < 40; i++) simulation.step(0.1) // 4 s
+        expect(positions(simulation)[0]).toBeLessThan(-1) // A is still waiting before the crossing
+
+        for (let i = 0; i < 110; i++) simulation.step(0.1) // 15 s in total
+        expect(positions(simulation)[1]).toBeGreaterThan(5) // A has turned north
+    })
+
+    it('without the rule the vehicle turns straight away', () => {
+        const simulation = scenario(false)
+        for (let i = 0; i < 40; i++) simulation.step(0.1)
+        expect(positions(simulation)[1]).toBeGreaterThan(1) // A is already heading north
     })
 })

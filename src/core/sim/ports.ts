@@ -58,3 +58,20 @@ export interface JunctionControl {
 export const NO_JUNCTION_RULES: JunctionControl = {
     conflictsOf: () => undefined
 }
+
+/** How sharply vehicles turn from one edge onto the next, and whom a turn crosses. */
+export interface TurnRules {
+    /** A turn sharp enough that drivers slow down for it, in either direction. */
+    isSharpTurn(from: number, to: number): boolean
+    /** A turn across the path of oncoming traffic (a left turn when driving on the right). */
+    crossesOncoming(from: number, to: number): boolean
+    /** The approaches that meet `approach` head-on at the end of the edge. */
+    oncoming(approach: number): readonly number[]
+}
+
+/** Nothing counts as a turn. */
+export const NO_TURN_RULES: TurnRules = {
+    isSharpTurn: () => false,
+    crossesOncoming: () => false,
+    oncoming: () => []
+}

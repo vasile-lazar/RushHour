@@ -1,5 +1,5 @@
 ﻿import { buildAdjacency, buildIncoming } from '../../graph/adjacency'
-import { endHeading } from '../../graph/geometry'
+import {angleBetween, endHeading} from '../../graph/geometry'
 import type { RoadGraph } from '../../graph/types'
 import type { Conflicts, EdgeFilter, JunctionControl, SignalControl } from '../ports'
 import { roadRank } from '../roadRules'
@@ -8,12 +8,6 @@ import { roadRank } from '../roadRules'
 const ONCOMING_RAD = Math.PI / 6
 /** A junction needs at least this many distinct neighbouring nodes; fewer is just a bend. */
 const MIN_NEIGHBOURS = 3
-
-/** The angle between two directions, from 0 to π. */
-function angleBetween(a: number, b: number): number {
-    const difference = Math.abs(a - b) % (2 * Math.PI)
-    return Math.min(difference, 2 * Math.PI - difference)
-}
 
 export class PriorityJunctions implements JunctionControl {
     private readonly conflicts: Array<Conflicts | undefined>
