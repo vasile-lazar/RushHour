@@ -39,3 +39,39 @@ export const NO_SIGNALS: SignalControl = {
     stateOf: () => 'green',
     approaches: []
 }
+
+/** The approaches an edge has to give way to at the junction at its end. */
+export interface Conflicts {
+    /** Approaches on bigger roads: always have priority */
+    readonly higher: readonly number[]
+    /** Approaches on equally ranked roads: first come, first served */
+    readonly equal: readonly number[]
+}
+
+/** Priority rules at junctions without traffic lights. */
+export interface JunctionControl {
+    /** What `edge` must give way to at its end, or undefined if it has priority there. */
+    conflictsOf(edge: number): Conflicts | undefined
+}
+
+/** No priority rules: vehicles ignore each other at junctions. */
+export const NO_JUNCTION_RULES: JunctionControl = {
+    conflictsOf: () => undefined
+}
+
+/** How sharply vehicles turn from one edge onto the next, and whom a turn crosses. */
+export interface TurnRules {
+    /** A turn sharp enough that drivers slow down for it, in either direction. */
+    isSharpTurn(from: number, to: number): boolean
+    /** A turn across the path of oncoming traffic (a left turn when driving on the right). */
+    crossesOncoming(from: number, to: number): boolean
+    /** The approaches that meet `approach` head-on at the end of the edge. */
+    oncoming(approach: number): readonly number[]
+}
+
+/** Nothing counts as a turn. */
+export const NO_TURN_RULES: TurnRules = {
+    isSharpTurn: () => false,
+    crossesOncoming: () => false,
+    oncoming: () => []
+}

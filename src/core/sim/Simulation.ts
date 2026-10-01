@@ -1,12 +1,17 @@
 ﻿import { pointAlong } from '../graph/geometry'
 import type { RoadGraph } from '../graph/types'
 import {
+    NO_JUNCTION_RULES,
     NO_SIGNALS,
+    NO_TURN_RULES,
     type CarFollowingModel,
+    type JunctionControl,
     type Rng,
     type RoutePlanner,
-    type SignalControl
+    type SignalControl,
+    type TurnRules
 } from './ports'
+
 /** Vehicle length in meters, used to measure the gap between bumpers */
 export const VEHICLE_LENGTH_M = 4.5
 /** How far ahead a driver looks for vehicles in front and for lower speed limits */
@@ -19,6 +24,23 @@ const MAX_BRAKING = 9
 const SLOWDOWN_BRAKING = 2
 /** Braking a driver accepts when deciding whether to stop for a yellow light (m/s²) */
 const YELLOW_BRAKING = 3
+/** Only vehicles closer than this to a junction decide whether to give way */
+const YIELD_DECISION_M = 40
+/** Speed a vehicle slows down to when approaching a junction where it must give way (m/s) */
+const YIELD_APPROACH_MS = 7
+/** A vehicle must not arrive within this many seconds of a vehicle with priority */
+const CRITICAL_GAP_S = 4
+/** After waiting for PATIENCE_S, drivers accept this smaller gap */
+const PATIENT_GAP_S = 2
+const PATIENCE_S = 10
+/** After waiting this long a driver pushes in regardless (this also breaks deadlocks) */
+const FORCE_AFTER_S = 25
+/** Below this speed a vehicle counts as standing still (m/s) */
+const STANDING_MS = 0.5
+/** A vehicle this close to the junction is about to enter it (m) */
+const NEAR_JUNCTION_M = 10
+/** Speed a vehicle slows down to before a sharp turn (m/s) */
+const TURN_SPEED_MS = 6
 
 interface Vehicle {
     /** Edge indices to drive along, in order */
@@ -33,6 +55,8 @@ interface Vehicle {
     acceleration: number
     /** Fastest speed allowed right now, given lower speed limits coming up */
     speedCap: number
+    /** Seconds spent (nearly) standing still; decides who goes first when equal roads meet */
+    waited: number
 }
 
 /** Result of a leader search, reused to avoid creating an object per vehicle per step */
@@ -54,19 +78,25 @@ export class Simulation {
     private readonly leader: Leader = { gap: Infinity, speed: 0 }
     private elapsed = 0
     private readonly signals: SignalControl
+    private readonly junctions: JunctionControl
+    private readonly turns: TurnRules
 
     constructor(
         graph: RoadGraph,
         planner: RoutePlanner,
         rng: Rng,
         model: CarFollowingModel,
-        signals: SignalControl = NO_SIGNALS
+        signals: SignalControl = NO_SIGNALS,
+        junctions: JunctionControl = NO_JUNCTION_RULES,
+        turns: TurnRules = NO_TURN_RULES
     ) {
         this.graph = graph
         this.planner = planner
         this.rng = rng
         this.model = model
         this.signals = signals
+        this.junctions = junctions
+        this.turns = turns
         this.lanes = new Array<Vehicle[] | undefined>(graph.edges.length)
     }
 
@@ -87,7 +117,8 @@ export class Simulation {
                 offset: 0,
                 speed: 0,
                 acceleration: 0,
-                speedCap: 0
+                speedCap: 0,
+                waited: 0
             }
             this.placeRandomly(vehicle)
             this.vehicles.push(vehicle)
@@ -103,7 +134,8 @@ export class Simulation {
             offset,
             speed: speed ?? edge.speedLimit,
             acceleration: 0,
-            speedCap: edge.speedLimit
+            speedCap: edge.speedLimit,
+            waited: 0
         })
     }
 
@@ -193,9 +225,9 @@ export class Simulation {
     }
 
     /**
-     * Looks along the route for whatever the driver must react to first: a signal they
-     * cannot run, or the rear-most vehicle on the next occupied edge. A signal counts
-     * as a stopped vehicle sitting at the stop line.
+     * Looks along the route for whatever the driver must react to first: a signal or a
+     * junction they must wait at, or the rear-most vehicle on the next occupied edge.
+     * Anything that blocks counts as a stopped vehicle sitting at the stop line.
      */
     private findLeaderOnRoute(vehicle: Vehicle): boolean {
         const edges = this.graph.edges
@@ -203,7 +235,12 @@ export class Simulation {
         let distance = edges[vehicle.route[vehicle.routeIndex]].length - vehicle.offset
 
         for (let r = vehicle.routeIndex; r < vehicle.route.length && distance < LOOKAHEAD_M; r++) {
-            if (this.signalBlocks(vehicle.route[r], distance, vehicle.speed)) {
+            const edgeIndex = vehicle.route[r]
+            if (
+                this.signalBlocks(edgeIndex, distance, vehicle.speed) ||
+                this.junctionBlocks(vehicle, edgeIndex, distance) ||
+                this.turnBlocks(vehicle, r, distance)
+            ) {
                 this.leader.gap = distance
                 this.leader.speed = 0
                 return true
@@ -225,6 +262,75 @@ export class Simulation {
         return false
     }
 
+    /** Must this vehicle wait at the end of `edge` for traffic that has priority? */
+    private junctionBlocks(vehicle: Vehicle, edge: number, distance: number): boolean {
+        const conflicts = this.junctions.conflictsOf(edge)
+        if (!conflicts || distance > YIELD_DECISION_M) return false
+        if (vehicle.waited > FORCE_AFTER_S) return false // has waited long enough: pushes in
+        // Too close and too fast to stop any more: the vehicle is committed
+        if (distance < (vehicle.speed * vehicle.speed) / (2 * MAX_BRAKING)) return false
+
+        const gap = vehicle.waited > PATIENCE_S ? PATIENT_GAP_S : CRITICAL_GAP_S
+        for (const other of conflicts.higher) {
+            if (this.approachBusy(other, gap, vehicle, edge, false)) return true
+        }
+        for (const other of conflicts.equal) {
+            if (this.approachBusy(other, gap, vehicle, edge, true)) return true
+        }
+        return false
+    }
+
+    /** Is the front vehicle of approach `other` about to use the junction? */
+    private approachBusy(
+        other: number,
+        gap: number,
+        waiting: Vehicle,
+        waitingEdge: number,
+        equalRank: boolean
+    ): boolean {
+        const lane = this.lanes[other]
+        if (!lane || lane.length === 0) return false
+        const front = lane[0]
+        const distance = this.graph.edges[other].length - front.offset
+
+        if (front.speed > STANDING_MS) {
+            // Moving: it is in the way if it is at the junction already or will be there soon
+            return distance < NEAR_JUNCTION_M || distance / front.speed < gap
+        }
+        if (distance > NEAR_JUNCTION_M) return false // a queue further back, not about to enter
+        if (!equalRank) return true // someone with priority is waiting right at the junction
+        // Equal roads and both waiting: first come, first served (lower edge index breaks a tie)
+        return front.waited > waiting.waited || (front.waited === waiting.waited && other < waitingEdge)
+    }
+
+    /** Must a vehicle about to turn across the road wait for oncoming traffic? */
+    private turnBlocks(vehicle: Vehicle, r: number, distance: number): boolean {
+        const nextIndex = vehicle.route[r + 1]
+        if (nextIndex === undefined) return false
+        const edgeIndex = vehicle.route[r]
+        if (!this.turns.crossesOncoming(edgeIndex, nextIndex)) return false
+
+        if (distance > YIELD_DECISION_M || vehicle.waited > FORCE_AFTER_S) return false
+        // Too close and too fast to stop any more: the vehicle is committed
+        if (distance < (vehicle.speed * vehicle.speed) / (2 * MAX_BRAKING)) return false
+
+        const gap = vehicle.waited > PATIENCE_S ? PATIENT_GAP_S : CRITICAL_GAP_S
+        for (const other of this.turns.oncoming(edgeIndex)) {
+            const lane = this.lanes[other]
+            if (!lane || lane.length === 0) continue
+            const front = lane[0]
+            if (front.speed <= STANDING_MS) continue // standing still: not about to enter
+
+            // Oncoming traffic that turns left as well passes on the other side
+            const frontNext = front.route[front.routeIndex + 1]
+            if (frontNext !== undefined && this.turns.crossesOncoming(other, frontNext)) continue
+
+            const toJunction = this.graph.edges[other].length - front.offset
+            if (toJunction < NEAR_JUNCTION_M || toJunction / front.speed < gap) return true
+        }
+        return false
+    }
+    
     /** Must a vehicle `distance` meters from the end of `edge` stop for the signal there? */
     private signalBlocks(edge: number, distance: number, speed: number): boolean {
         const state = this.signals.stateOf(edge, this.elapsed)
@@ -236,21 +342,36 @@ export class Simulation {
     }
 
     /**
-     * The highest speed from which the vehicle can still slow down comfortably
-     * to every speed limit within sight: sqrt(limit² + 2 * braking * distance).
+     * The highest speed from which the vehicle can still slow down comfortably to every
+     * speed limit within sight, and to the approach speed of a junction where it must give way:
+     * sqrt(target² + 2 * braking * distance).
      */
     private speedCap(vehicle: Vehicle): number {
         const edges = this.graph.edges
-        const current = edges[vehicle.route[vehicle.routeIndex]]
+        const currentIndex = vehicle.route[vehicle.routeIndex]
+        const current = edges[currentIndex]
         let cap = current.speedLimit
-        let distance = current.length - vehicle.offset
+        let distance = current.length - vehicle.offset // to the end of the edge being looked at
+        cap = Math.min(cap, this.junctionCap(currentIndex, distance))
 
         for (let r = vehicle.routeIndex + 1; r < vehicle.route.length && distance < LOOKAHEAD_M; r++) {
-            const next = edges[vehicle.route[r]]
+            const previousIndex = vehicle.route[r - 1]
+            const edgeIndex = vehicle.route[r]
+            const next = edges[edgeIndex]
             cap = Math.min(cap, Math.sqrt(next.speedLimit ** 2 + 2 * SLOWDOWN_BRAKING * distance))
+            if (this.turns.isSharpTurn(previousIndex, edgeIndex)) {
+                cap = Math.min(cap, Math.sqrt(TURN_SPEED_MS ** 2 + 2 * SLOWDOWN_BRAKING * distance))
+            }
             distance += next.length
+            cap = Math.min(cap, this.junctionCap(edgeIndex, distance))
         }
         return cap
+    }
+
+    /** Speed cap for a junction at the end of `edge`: infinite unless the edge has to give way there. */
+    private junctionCap(edge: number, distanceToEnd: number): number {
+        if (!this.junctions.conflictsOf(edge)) return Infinity
+        return Math.sqrt(YIELD_APPROACH_MS ** 2 + 2 * SLOWDOWN_BRAKING * distanceToEnd)
     }
 
     /** Plans more road when the route is running short. Does nothing at a true dead end. */
@@ -271,6 +392,7 @@ export class Simulation {
         const edges = this.graph.edges
         const accelerated = Math.max(0, vehicle.speed + vehicle.acceleration * dt)
         vehicle.speed = Math.min(accelerated, vehicle.speedCap)
+        vehicle.waited = vehicle.speed < STANDING_MS ? vehicle.waited + dt : 0
         vehicle.offset += vehicle.speed * dt
 
         let edge = edges[vehicle.route[vehicle.routeIndex]]

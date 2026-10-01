@@ -1,5 +1,13 @@
 ﻿import { describe, expect, it } from 'vitest'
-import {endHeading, pointAlong, polylineLength, reversePolyline} from './geometry'
+import {
+    angleBetween,
+    endHeading,
+    pointAlong,
+    polylineLength,
+    reversePolyline,
+    startHeading,
+    wrapAngle
+} from './geometry'
 
 // An L-shaped road: 10 m east, then 5 m north
 const road = [0, 0, 10, 0, 10, 5]
@@ -47,3 +55,28 @@ describe('pointAlong', () => {
     })
 })
 
+describe('startHeading', () => {
+    it('gives the direction of the first segment', () => {
+        expect(startHeading([0, 0, 0, 10, 10, 10])).toBeCloseTo(Math.PI / 2)
+    })
+
+    it('skips a zero-length first segment', () => {
+        expect(startHeading([0, 0, 0, 0, 5, 0])).toBeCloseTo(0)
+    })
+})
+
+describe('wrapAngle', () => {
+    it('wraps angles into the range from -π to π', () => {
+        expect(wrapAngle(0.5)).toBeCloseTo(0.5)
+        expect(wrapAngle((3 * Math.PI) / 2)).toBeCloseTo(-Math.PI / 2)
+        expect(wrapAngle((-3 * Math.PI) / 2)).toBeCloseTo(Math.PI / 2)
+    })
+})
+
+describe('angleBetween', () => {
+    it('measures the smaller angle between two directions', () => {
+        expect(angleBetween(0, Math.PI)).toBeCloseTo(Math.PI)
+        expect(angleBetween(0.1, 2 * Math.PI - 0.1)).toBeCloseTo(0.2)
+        expect(angleBetween(Math.PI / 2, -Math.PI / 2)).toBeCloseTo(Math.PI)
+    })
+})

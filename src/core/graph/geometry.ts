@@ -55,3 +55,25 @@ export function pointAlong(
         remaining -= segment
     }
 }
+
+/** Direction of travel (radians, counter-clockwise from east) at the start of a polyline. */
+export function startHeading(points: number[]): number {
+    for (let i = 0; i + 3 < points.length; i += 2) {
+        const dx = points[i + 2] - points[i]
+        const dy = points[i + 3] - points[i + 1]
+        if (dx !== 0 || dy !== 0) return Math.atan2(dy, dx)
+    }
+    return 0
+}
+
+/** Wraps an angle into [-π, π). */
+export function wrapAngle(angle: number): number {
+    const full = 2 * Math.PI
+    return ((((angle + Math.PI) % full) + full) % full) - Math.PI
+}
+
+/** The angle between two directions, from 0 to π. */
+export function angleBetween(a: number, b: number): number {
+    const difference = Math.abs(a - b) % (2 * Math.PI)
+    return Math.min(difference, 2 * Math.PI - difference)
+}
