@@ -299,3 +299,79 @@ describe('turning left', () => {
         expect(positions(simulation)[1]).toBeGreaterThan(1) // A is already heading north
     })
 })
+describe('priority to the right', () => {
+    // Two equal streets meeting at node 0: A arrives from the west, B from the south (on A's right)
+    const meeting = makeGraph(
+        [[0, 0], [-300, 0], [300, 0], [0, 300], [0, -300]],
+        [
+            { from: 1, to: 0 }, // 0: A's street, heading east
+            { from: 4, to: 0 }, // 1: B's street, heading north
+            { from: 0, to: 2 }, // 2: exit east
+            { from: 0, to: 3 } // 3: exit north
+        ]
+    )
+
+    function scenario(rulesOn: boolean): Simulation {
+        const planner = new RandomWalkPlanner(meeting, isDrivable)
+        const junctions = rulesOn
+            ? new PriorityJunctions(meeting, isDrivable, NO_SIGNALS)
+            : NO_JUNCTION_RULES
+        const simulation = new Simulation(meeting, planner, () => 0, new IdmModel(), NO_SIGNALS, junctions)
+        simulation.addVehicle(0, 270, 10) // A: 30 m from the junction
+        simulation.addVehicle(1, 270, 10) // B: 30 m away too, coming from A's right
+        return simulation
+    }
+
+    it('makes a vehicle wait for traffic coming from its right', () => {
+        const simulation = scenario(true)
+        for (let i = 0; i < 35; i++) simulation.step(0.1) // 3.5 s
+        const out = positions(simulation)
+        expect(out[0]).toBeLessThan(-1) // A is still waiting before the junction
+        expect(out[2]).toBeGreaterThan(1) // B has gone through and turned east
+    })
+
+    it('without the rule both vehicles drive straight in', () => {
+        const simulation = scenario(false)
+        for (let i = 0; i < 35; i++) simulation.step(0.1)
+        expect(positions(simulation)[0]).toBeGreaterThan(1) // A is through
+    })
+})
+
+describe('roundabouts', () => {
+    // A ring (edges 0-3, counter-clockwise) with an entry road arriving at node 0 (edge 4)
+    // and an exit leaving it (edge 5)
+    const ring = makeGraph(
+        [[20, 0], [0, 20], [-20, 0], [0, -20], [60, 0]],
+        [
+            { from: 0, to: 1, speedLimit: 8, roadClass: 'primary', roundabout: true },
+            { from: 1, to: 2, speedLimit: 8, roadClass: 'primary', roundabout: true },
+            { from: 2, to: 3, speedLimit: 8, roadClass: 'primary', roundabout: true },
+            { from: 3, to: 0, speedLimit: 8, roadClass: 'primary', roundabout: true },
+            { from: 4, to: 0, roadClass: 'residential' },
+            { from: 0, to: 4, roadClass: 'residential' }
+        ]
+    )
+
+    function scenario(rulesOn: boolean): Simulation {
+        const planner = new RandomWalkPlanner(ring, isDrivable)
+        const junctions = rulesOn
+            ? new PriorityJunctions(ring, isDrivable, NO_SIGNALS)
+            : NO_JUNCTION_RULES
+        const simulation = new Simulation(ring, planner, () => 0, new IdmModel(), NO_SIGNALS, junctions)
+        simulation.addVehicle(3, 10, 8) // on the ring, about 18 m before the entry
+        simulation.addVehicle(4, 30, 7) // on the entry road, 10 m before the ring
+        return simulation
+    }
+
+    it('makes entering vehicles wait for traffic already on the ring', () => {
+        const simulation = scenario(true)
+        for (let i = 0; i < 20; i++) simulation.step(0.1) // 2 s
+        expect(positions(simulation)[2]).toBeGreaterThan(20.5) // still before the ring (x = 20)
+    })
+
+    it('without the rule the entering vehicle drives straight onto the ring', () => {
+        const simulation = scenario(false)
+        for (let i = 0; i < 20; i++) simulation.step(0.1)
+        expect(positions(simulation)[2]).toBeLessThan(19.5) // already on the ring
+    })
+})

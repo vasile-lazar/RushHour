@@ -5,6 +5,7 @@ interface EdgeSpec {
     to: number
     speedLimit?: number
     roadClass?: string
+    roundabout?: boolean
 }
 
 /** Builds a small RoadGraph for tests, with a straight edge for each spec. */
@@ -24,7 +25,8 @@ export function makeGraph(
             speedLimit: spec.speedLimit ?? 10,
             lanes: 1,
             roadClass: spec.roadClass ?? 'residential',
-            geometry: [a.x, a.y, b.x, b.y]
+            geometry: [a.x, a.y, b.x, b.y],
+            ...(spec.roundabout ? { roundabout: true } : {})
         }
     })
     const xs = points.map((p) => p[0])

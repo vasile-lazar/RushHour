@@ -52,11 +52,14 @@ export interface Conflicts {
 export interface JunctionControl {
     /** What `edge` must give way to at its end, or undefined if it has priority there. */
     conflictsOf(edge: number): Conflicts | undefined
+    /** For a roundabout edge: the ring edge just before it, or -1. */
+    upstreamOf(edge: number): number
 }
 
 /** No priority rules: vehicles ignore each other at junctions. */
 export const NO_JUNCTION_RULES: JunctionControl = {
-    conflictsOf: () => undefined
+    conflictsOf: () => undefined,
+    upstreamOf: () => -1
 }
 
 /** How sharply vehicles turn from one edge onto the next, and whom a turn crosses. */

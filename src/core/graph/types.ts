@@ -23,6 +23,8 @@ export interface GraphEdge {
     roadClass: string
     /** Flat polyline [x0, y0, x1, y1, ...] in meters, running from -> to */
     geometry: number[]
+    /** Part of a roundabout ring: vehicles already on it have priority over those entering */
+    roundabout?: boolean
 }
 
 
