@@ -3,6 +3,7 @@ import {angleBetween, endHeading, wrapAngle} from '../../graph/geometry'
 import type { RoadGraph } from '../../graph/types'
 import type {Conflicts, EdgeFilter, JunctionControl, Rng, SignalControl} from '../ports'
 import { roadRank } from '../roadRules'
+import {buildClusters} from "@core/graph/clusters";
 
 /** Approaches meeting head-on (within this angle) do not cross each other's path. */
 const ONCOMING_RAD = Math.PI / 6
@@ -43,6 +44,8 @@ export class PriorityJunctions implements JunctionControl {
     private readonly conflicts: Array<Conflicts | undefined>
     /** Per roundabout edge: the ring edge just before it (-1 for every other edge) */
     private readonly upstream: Int32Array
+    /** Per edge: 1 if it links two nodes of the same junction cluster */
+    private readonly internal: Uint8Array
 
     constructor(graph: RoadGraph, canDrive: EdgeFilter, signals: SignalControl, rng?: Rng) {
         this.conflicts = new Array<Conflicts | undefined>(graph.edges.length)
@@ -57,18 +60,41 @@ export class PriorityJunctions implements JunctionControl {
             if (before !== undefined) this.upstream[index] = before
         })
 
-        graph.nodes.forEach((_, node) => {
-            const approaches = incoming[node].filter((edge) => canDrive(graph.edges[edge]))
-            if (approaches.length < 2) return
-            if (approaches.some((edge) => signalled.has(edge))) return // the lights decide here
+        const clusters = buildClusters(graph, canDrive)
+        this.internal = new Uint8Array(graph.edges.length)
+        graph.edges.forEach((edge, index) => {
+            if (edge.from !== edge.to && clusters[edge.from] === clusters[edge.to]) this.internal[index] = 1
+        })
+        const members = new Map<number, number[]>()
+        clusters.forEach((cluster, node) => {
+            const list = members.get(cluster)
+            if (list) list.push(node)
+            else members.set(cluster, [node])
+        })
+
+        for (const [cluster, nodes] of members) {
+            // Roads entering the junction from outside; links between its own nodes are not approaches
+            const approaches: number[] = []
+            for (const node of nodes) {
+                for (const edge of incoming[node]) {
+                    const entering = graph.edges[edge]
+                    if (canDrive(entering) && clusters[entering.from] !== cluster) approaches.push(edge)
+                }
+            }
+            if (approaches.length < 2) continue
+            // The lights decide here, at any node of the junction
+            if (nodes.some((node) => incoming[node].some((edge) => signalled.has(edge)))) continue
 
             // A bend or a straight stretch has only two neighbours: nothing to give way to
             const neighbours = new Set<number>()
             for (const edge of approaches) neighbours.add(graph.edges[edge].from)
-            for (const edge of outgoing[node]) {
-                if (canDrive(graph.edges[edge])) neighbours.add(graph.edges[edge].to)
+            for (const node of nodes) {
+                for (const edge of outgoing[node]) {
+                    const leaving = graph.edges[edge]
+                    if (canDrive(leaving) && clusters[leaving.to] !== cluster) neighbours.add(leaving.to)
+                }
             }
-            if (neighbours.size < MIN_NEIGHBOURS) return
+            if (neighbours.size < MIN_NEIGHBOURS) continue
 
             const headings = approaches.map((edge) => endHeading(graph.edges[edge].geometry))
             const isRing = approaches.map((edge) => graph.edges[edge].roundabout === true)
@@ -98,7 +124,7 @@ export class PriorityJunctions implements JunctionControl {
                 })
                 if (higher.length > 0 || equal.length > 0) this.conflicts[edge] = { higher, equal }
             })
-        })
+        }
     }
 
     conflictsOf(edge: number): Conflicts | undefined {
@@ -107,5 +133,9 @@ export class PriorityJunctions implements JunctionControl {
 
     upstreamOf(edge: number): number {
         return this.upstream[edge]
+    }
+    
+    isInternal(edge: number): boolean {
+        return this.internal[edge] === 1
     }
 }
