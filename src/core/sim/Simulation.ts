@@ -37,6 +37,8 @@ const PATIENCE_S = 5
 const FORCE_AFTER_S = 10
 /** Below this speed a vehicle counts as standing still (m/s) */
 const STANDING_MS = 0.5
+/** Below this speed a vehicle at a junction counts as waiting, not as passing through (m/s) */
+const CREEP_MS = 2
 /** A vehicle this close to the junction is about to enter it (m) */
 const NEAR_JUNCTION_M = 10
 /** Speed a vehicle slows down to before a sharp turn (m/s) */
@@ -116,6 +118,146 @@ export class Simulation {
         let count = 0
         for (const vehicle of this.vehicles) if (vehicle.waited >= seconds) count++
         return count
+    }
+    /** Debug: describes vehicles that have stood still for `seconds`, and what they wait for. */
+    private describeFront(edge: number): string {
+        const lane = this.lanes[edge]
+        if (!lane || lane.length === 0) return `${edge}:empty`
+        const f = lane[0]
+        const to = (this.graph.edges[edge].length - f.offset).toFixed(0)
+        return `${edge}:${to}m v=${f.speed.toFixed(1)} w=${f.waited.toFixed(0)} next=${f.route[f.routeIndex + 1] ?? '-'}`
+    }
+
+    /** Debug: follows each standing queue to its head, or to a cycle, and explains the head. */
+    traceQueue(seconds: number, limit = 4): string[] {
+        this.rebuildLanes()
+        const edges = this.graph.edges
+        const out: string[] = []
+        const done = new Set<number>()
+        for (const start of this.vehicles) {
+            if (start.waited < seconds) continue
+            const chain: number[] = []
+            let last = start
+            let e = start.route[start.routeIndex]
+            let verdict = ''
+            for (;;) {
+                if (chain.includes(e)) {
+                    verdict = 'CYCLE'
+                    break
+                }
+                chain.push(e)
+                const f = (this.lanes[e] as Vehicle[])[0]
+                if (f.waited < seconds) {
+                    verdict = 'head is moving'
+                    break
+                }
+                last = f
+                const n = f.route[f.routeIndex + 1]
+                if (n === undefined) {
+                    verdict = 'head at route end'
+                    break
+                }
+                const nextLane = this.lanes[n]
+                if (!nextLane || nextLane.length === 0) {
+                    verdict = 'head blocked by rules, next edge empty'
+                    break
+                }
+                e = n
+            }
+            const le = last.route[last.routeIndex]
+            if (done.has(le)) continue
+            done.add(le)
+            const ln = last.route[last.routeIndex + 1]
+            const node = this.graph.nodes[edges[le].to]
+            const c = this.junctions.conflictsOf(le)
+            out.push(
+                `${verdict}: ${chain.join(' > ')}\n` +
+                `   last standing: node (${node.x.toFixed(0)}, ${node.y.toFixed(0)}) edge ${le}->${ln ?? '-'} ` +
+                `${edges[le].roadClass}, ${(edges[le].length - last.offset).toFixed(0)}m to end, ` +
+                `w=${last.waited.toFixed(0)}, signal=${this.signals.stateOf(le, this.elapsed)}, ` +
+                `left=${ln !== undefined && this.turns.crossesOncoming(le, ln)}\n` +
+                `   higher: ${(c?.higher ?? []).map((o) => this.describeFront(o)).join(' | ')}\n` +
+                `   equal: ${(c?.equal ?? []).map((o) => this.describeFront(o)).join(' | ')}\n` +
+                `   oncoming: ${this.turns.oncoming(le).map((o) => this.describeFront(o)).join(' | ')}\n` +
+                `   next edge: ${ln === undefined ? '-' : this.describeFront(ln)}\n` +
+                `   scan: ${this.scanRoute(last)}`
+            )
+            if (out.length >= limit) break
+        }
+        return out
+    }
+    /** Debug: what blocks this vehicle along its route? */
+    private scanRoute(vehicle: Vehicle): string {
+        const edges = this.graph.edges
+        let distance = edges[vehicle.route[vehicle.routeIndex]].length - vehicle.offset
+        const parts: string[] = []
+        for (let r = vehicle.routeIndex; r < vehicle.route.length && distance < LOOKAHEAD_M; r++) {
+            const e = vehicle.route[r]
+            const flags: string[] = []
+            if (this.signalBlocks(e, distance, vehicle.speed)) flags.push('signal')
+            if (this.junctionBlocks(vehicle, e, vehicle.route[r + 1], distance)) flags.push('junction')
+            if (this.turnBlocks(vehicle, r, distance)) flags.push('turn')
+            parts.push(`${e}@${distance.toFixed(0)}m[${flags.join(',')}]`)
+            if (r + 1 >= vehicle.route.length) break
+            distance += edges[vehicle.route[r + 1]].length
+        }
+        return `${parts.join(' ')} acc=${vehicle.acceleration.toFixed(2)} cap=${vehicle.speedCap.toFixed(1)} v=${vehicle.speed.toFixed(2)}`
+    }
+    /** Debug: follows who each standing vehicle waits behind, to the head of the queue or a cycle. */
+    traceLeaders(seconds: number, limit = 4): string[] {
+        this.rebuildLanes()
+        const edges = this.graph.edges
+        const leaderOf = (v: Vehicle): Vehicle | undefined => {
+            const lane = this.lanes[v.route[v.routeIndex]] as Vehicle[]
+            const i = lane.indexOf(v)
+            if (i > 0) return lane[i - 1]
+            let distance = edges[v.route[v.routeIndex]].length - v.offset
+            for (let r = v.routeIndex + 1; r < v.route.length && distance < LOOKAHEAD_M; r++) {
+                const l = this.lanes[v.route[r]]
+                if (l && l.length > 0 && l[l.length - 1] !== v) return l[l.length - 1]
+                distance += edges[v.route[r]].length
+            }
+            return undefined
+        }
+        const label = (v: Vehicle): string => {
+            const e = v.route[v.routeIndex]
+            return `${e}@${(edges[e].length - v.offset).toFixed(0)}m v=${v.speed.toFixed(1)} w=${v.waited.toFixed(0)}`
+        }
+
+        const out: string[] = []
+        const seen = new Set<Vehicle>()
+        for (const start of this.vehicles) {
+            if (start.waited < seconds || seen.has(start)) continue
+            const chain: Vehicle[] = []
+            let v = start
+            let verdict = ''
+            for (;;) {
+                if (chain.includes(v)) {
+                    verdict = 'CYCLE'
+                    break
+                }
+                chain.push(v)
+                seen.add(v)
+                if (v.waited < seconds) {
+                    verdict = 'head is moving'
+                    break
+                }
+                const ahead = leaderOf(v)
+                if (!ahead) {
+                    verdict = 'head has no leader (rules or signal)'
+                    break
+                }
+                v = ahead
+            }
+            const head = chain[chain.length - 1]
+            const node = this.graph.nodes[edges[head.route[head.routeIndex]].to]
+            out.push(
+                `${verdict} (${chain.length} vehicles): ${chain.slice(0, 12).map(label).join(' > ')}\n` +
+                `   head at node (${node.x.toFixed(0)}, ${node.y.toFixed(0)}): ${this.scanRoute(head)}`
+            )
+            if (out.length >= limit) break
+        }
+        return out
     }
     
     get vehicleCount(): number {
@@ -359,7 +501,7 @@ export class Simulation {
 
         const distance = this.graph.edges[edge].length - front.offset + extra
 
-        if (front.speed > STANDING_MS) {
+        if (front.speed > CREEP_MS) {
             // Moving: it is in the way if it is at the junction already or will be there soon
             return distance < NEAR_JUNCTION_M || distance / front.speed < gap
         }
