@@ -398,7 +398,7 @@ export class Simulation {
             const edgeIndex = vehicle.route[r]
             if (
                 this.signalBlocks(edgeIndex, distance, vehicle.speed) ||
-                this.junctionBlocks(vehicle, edgeIndex, vehicle.route[r + 1], distance) ||
+                this.junctionBlocks(vehicle, edgeIndex, this.exitOf(vehicle.route, r), distance) ||
                 this.turnBlocks(vehicle, r, distance)
             ) {
                 this.leader.gap = distance
@@ -421,7 +421,15 @@ export class Simulation {
         }
         return false
     }
-
+    
+    /** The road taken after the junction at the end of route[index]: links inside a split junction are skipped. */
+    private exitOf(route: number[], index: number): number | undefined {
+        for (let k = index + 1; k < route.length; k++) {
+            if (!this.junctions.isInternal(route[k])) return route[k]
+        }
+        return undefined
+    }
+    
     /** Must this vehicle wait at the end of `edge` for traffic that has priority? */
     private junctionBlocks(
         vehicle: Vehicle,
@@ -490,7 +498,7 @@ export class Simulation {
         // Its path may not touch ours at all (a turn into another road, say): then ignore it.
         // Roundabout rings keep absolute priority over anything entering.
         if (extra === 0 && waitingNext !== undefined && !this.graph.edges[edge].roundabout) {
-            const frontNext = front.route[front.routeIndex + 1]
+            const frontNext = this.exitOf(front.route, front.routeIndex)
             if (
                 frontNext !== undefined &&
                 !this.paths.cross(waitingEdge, waitingNext, edge, frontNext)
@@ -513,7 +521,7 @@ export class Simulation {
 
     /** Must a vehicle about to turn across the road wait for oncoming traffic? */
     private turnBlocks(vehicle: Vehicle, r: number, distance: number): boolean {
-        const nextIndex = vehicle.route[r + 1]
+        const nextIndex = this.exitOf(vehicle.route, r)
         if (nextIndex === undefined) return false
         const edgeIndex = vehicle.route[r]
         if (!this.turns.crossesOncoming(edgeIndex, nextIndex)) return false
@@ -530,7 +538,7 @@ export class Simulation {
             if (front.speed <= STANDING_MS) continue // standing still: not about to enter
 
             // Oncoming traffic whose path does not cross ours (another left turn, a right turn) passes
-            const frontNext = front.route[front.routeIndex + 1]
+            const frontNext = this.exitOf(front.route, front.routeIndex)
             if (frontNext !== undefined && !this.paths.cross(edgeIndex, nextIndex, other, frontNext)) continue
             if (frontNext !== undefined && this.turns.crossesOncoming(other, frontNext)) continue
 

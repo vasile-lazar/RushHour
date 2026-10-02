@@ -54,12 +54,15 @@ export interface JunctionControl {
     conflictsOf(edge: number): Conflicts | undefined
     /** For a roundabout edge: the ring edge just before it, or -1. */
     upstreamOf(edge: number): number
+    /** True for a short link between the nodes of one split junction. */
+    isInternal(edge: number): boolean
 }
 
 /** No priority rules: vehicles ignore each other at junctions. */
 export const NO_JUNCTION_RULES: JunctionControl = {
     conflictsOf: () => undefined,
-    upstreamOf: () => -1
+    upstreamOf: () => -1,
+    isInternal: () => false
 }
 
 /** How sharply vehicles turn from one edge onto the next, and whom a turn crosses. */

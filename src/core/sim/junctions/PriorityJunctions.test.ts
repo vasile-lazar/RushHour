@@ -158,4 +158,12 @@ describe('PriorityJunctions', () => {
         expect(junctions.conflictsOf(2)).toBeUndefined() // the link is inside the junction
         expect(junctions.conflictsOf(3)).toBeUndefined()
     })
+
+    it('knows which edges are links inside a split junction', () => {
+        const junctions = new PriorityJunctions(splitT(), isDrivable, NO_SIGNALS)
+        expect(junctions.isInternal(2)).toBe(true)
+        expect(junctions.isInternal(3)).toBe(true)
+        expect(junctions.isInternal(0)).toBe(false)
+        expect(junctions.isInternal(6)).toBe(false)
+    })
 })

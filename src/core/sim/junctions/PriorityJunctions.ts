@@ -44,6 +44,8 @@ export class PriorityJunctions implements JunctionControl {
     private readonly conflicts: Array<Conflicts | undefined>
     /** Per roundabout edge: the ring edge just before it (-1 for every other edge) */
     private readonly upstream: Int32Array
+    /** Per edge: 1 if it links two nodes of the same junction cluster */
+    private readonly internal: Uint8Array
 
     constructor(graph: RoadGraph, canDrive: EdgeFilter, signals: SignalControl, rng?: Rng) {
         this.conflicts = new Array<Conflicts | undefined>(graph.edges.length)
@@ -59,6 +61,10 @@ export class PriorityJunctions implements JunctionControl {
         })
 
         const clusters = buildClusters(graph, canDrive)
+        this.internal = new Uint8Array(graph.edges.length)
+        graph.edges.forEach((edge, index) => {
+            if (edge.from !== edge.to && clusters[edge.from] === clusters[edge.to]) this.internal[index] = 1
+        })
         const members = new Map<number, number[]>()
         clusters.forEach((cluster, node) => {
             const list = members.get(cluster)
@@ -127,5 +133,9 @@ export class PriorityJunctions implements JunctionControl {
 
     upstreamOf(edge: number): number {
         return this.upstream[edge]
+    }
+    
+    isInternal(edge: number): boolean {
+        return this.internal[edge] === 1
     }
 }
