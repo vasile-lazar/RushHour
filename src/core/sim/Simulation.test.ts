@@ -8,7 +8,7 @@ import { RandomWalkPlanner } from './routing/RandomWalkPlanner'
 import { Simulation, VEHICLE_LENGTH_M } from './Simulation'
 import { TrafficSignals } from './signals/TrafficSignals'
 import { PriorityJunctions } from './junctions/PriorityJunctions'
-import {NO_JUNCTION_RULES, NO_SIGNALS, NO_TURN_RULES} from './ports'
+import {NO_JUNCTION_RULES, NO_SIGNALS, NO_TURN_RULES, SignalControl} from './ports'
 import {Turns} from "@core/sim/junctions/Turns";
 
 // Three points 100 m apart; every edge has a 10 m/s speed limit
@@ -373,5 +373,22 @@ describe('roundabouts', () => {
         const simulation = scenario(false)
         for (let i = 0; i < 20; i++) simulation.step(0.1)
         expect(positions(simulation)[2]).toBeLessThan(19.5) // already on the ring
+    })
+})
+
+describe('gridlock', () => {
+    it('takes a vehicle out after it has been stuck for three minutes', () => {
+        const road = makeGraph([[0, 0], [200, 0]], [{ from: 0, to: 1 }])
+        const alwaysRed: SignalControl = { stateOf: () => 'red', approaches: [0] }
+        const planner = new RandomWalkPlanner(road, isDrivable)
+        const simulation = new Simulation(road, planner, () => 0, new IdmModel(), alwaysRed)
+        simulation.addVehicle(0, 100, 10)
+
+        for (let i = 0; i < 1500; i++) simulation.step(0.1) // 150 s: waiting at the red light
+        expect(simulation.countStanding(60)).toBe(1)
+        expect(simulation.teleports).toBe(0)
+
+        for (let i = 0; i < 1100; i++) simulation.step(0.1) // 260 s in total
+        expect(simulation.teleports).toBe(1)
     })
 })

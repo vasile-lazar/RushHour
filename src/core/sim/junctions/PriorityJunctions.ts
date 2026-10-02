@@ -1,7 +1,7 @@
 ﻿import { buildAdjacency, buildIncoming } from '../../graph/adjacency'
-import { endHeading, wrapAngle } from '../../graph/geometry'
+import {angleBetween, endHeading, wrapAngle} from '../../graph/geometry'
 import type { RoadGraph } from '../../graph/types'
-import type { Conflicts, EdgeFilter, JunctionControl, SignalControl } from '../ports'
+import type {Conflicts, EdgeFilter, JunctionControl, Rng, SignalControl} from '../ports'
 import { roadRank } from '../roadRules'
 
 /** Approaches meeting head-on (within this angle) do not cross each other's path. */
@@ -10,13 +10,41 @@ const ONCOMING_RAD = Math.PI / 6
 const MIN_NEIGHBOURS = 3
 /** Priority of a roundabout ring: above every ordinary road. */
 const RING_RANK = 100
+/** A road counts as the straight-through partner of another if it is within this angle of exactly opposite. */
+const THROUGH_RAD = (Math.PI * 5) / 12
 
+/**
+ * Where three or more equal roads meet, right-priority makes a cycle (everyone waits for
+ * the one on their right). Break it: one road, plus its straight-through partner, keeps
+ * priority and every other equal road is demoted to give way to them.
+ */
+function demoteMinor(ranks: number[], isRing: boolean[], headings: number[], rng: Rng): void {
+    if (isRing.some(Boolean)) return
+    const top = Math.max(...ranks)
+    const tops = ranks.flatMap((rank, i) => (rank === top ? [i] : []))
+    if (tops.length < 3) return // two equal roads cannot form a cycle
+
+    const first = tops[Math.floor(rng() * tops.length)]
+    let partner = -1
+    let best = THROUGH_RAD
+    for (const i of tops) {
+        if (i === first) continue
+        const off = angleBetween(headings[first] + Math.PI, headings[i])
+        if (off < best) {
+            best = off
+            partner = i
+        }
+    }
+    for (const i of tops) {
+        if (i !== first && i !== partner) ranks[i] = top - 0.5
+    }
+}
 export class PriorityJunctions implements JunctionControl {
     private readonly conflicts: Array<Conflicts | undefined>
     /** Per roundabout edge: the ring edge just before it (-1 for every other edge) */
     private readonly upstream: Int32Array
 
-    constructor(graph: RoadGraph, canDrive: EdgeFilter, signals: SignalControl) {
+    constructor(graph: RoadGraph, canDrive: EdgeFilter, signals: SignalControl, rng?: Rng) {
         this.conflicts = new Array<Conflicts | undefined>(graph.edges.length)
         this.upstream = new Int32Array(graph.edges.length).fill(-1)
         const signalled = new Set<number>(signals.approaches)
@@ -47,6 +75,7 @@ export class PriorityJunctions implements JunctionControl {
             const ranks = approaches.map((edge, i) =>
                 isRing[i] ? RING_RANK : roadRank(graph.edges[edge].roadClass)
             )
+            if (rng) demoteMinor(ranks, isRing, headings, rng)
 
             approaches.forEach((edge, i) => {
                 const higher: number[] = []

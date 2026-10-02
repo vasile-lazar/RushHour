@@ -104,4 +104,32 @@ describe('PriorityJunctions', () => {
         expect(junctions.upstreamOf(0)).toBe(3)
         expect(junctions.upstreamOf(4)).toBe(-1) // not a ring edge
     })
+
+    describe('random give-way', () => {
+        it('makes the side road of an equal T give way when a main road is picked', () => {
+            const junctions = new PriorityJunctions(
+                tJunction('residential', 'residential'), isDrivable, NO_SIGNALS, () => 0
+            )
+            expect(junctions.conflictsOf(0)).toBeUndefined()
+            expect(junctions.conflictsOf(3)).toBeUndefined()
+            expect(junctions.conflictsOf(4)).toEqual({ higher: [0, 3], equal: [] })
+        })
+
+        it('can pick the side road as the main one, so the other two give way to it', () => {
+            const junctions = new PriorityJunctions(
+                tJunction('residential', 'residential'), isDrivable, NO_SIGNALS, () => 0.99
+            )
+            expect(junctions.conflictsOf(4)).toBeUndefined()
+            expect(junctions.conflictsOf(0)).toEqual({ higher: [4], equal: [] })
+            expect(junctions.conflictsOf(3)).toEqual({ higher: [4], equal: [] })
+        })
+
+        it('breaks the right-priority cycle at a crossing', () => {
+            const junctions = new PriorityJunctions(crossing(), isDrivable, NO_SIGNALS, () => 0)
+            expect(junctions.conflictsOf(0)).toBeUndefined()
+            expect(junctions.conflictsOf(1)).toBeUndefined()
+            expect(junctions.conflictsOf(2)).toEqual({ higher: [0, 1], equal: [] })
+            expect(junctions.conflictsOf(3)).toEqual({ higher: [0, 1], equal: [] })
+        })
+    })
 })
