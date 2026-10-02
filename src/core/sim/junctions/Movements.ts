@@ -1,5 +1,6 @@
 ﻿import { endHeading, startHeading } from '../../graph/geometry'
 import type { RoadGraph } from '../../graph/types'
+import {PathRules} from "@core/sim/ports";
 
 const TWO_PI = 2 * Math.PI
 /** How far a lane sits beside its road's axis, seen from the junction centre (rad). */
@@ -14,7 +15,7 @@ function normalize(angle: number): number {
  * another, and two paths cross exactly when their chords interleave around the circle.
  * Only angles matter, so any junction shape works.
  */
-export class Movements {
+export class Movements implements PathRules {
     /** Per edge: where it enters the junction at its end (angle around the junction) */
     private readonly entry: Float64Array
     /** Per edge: where it leaves the junction at its start */

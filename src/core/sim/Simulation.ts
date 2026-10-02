@@ -9,7 +9,7 @@ import {
     type Rng,
     type RoutePlanner,
     type SignalControl,
-    type TurnRules
+    type TurnRules, PathRules, NO_PATH_RULES
 } from './ports'
 
 /** Vehicle length in meters, used to measure the gap between bumpers */
@@ -83,6 +83,7 @@ export class Simulation {
     private readonly signals: SignalControl
     private readonly junctions: JunctionControl
     private readonly turns: TurnRules
+    private readonly paths: PathRules
 
     constructor(
         graph: RoadGraph,
@@ -91,7 +92,8 @@ export class Simulation {
         model: CarFollowingModel,
         signals: SignalControl = NO_SIGNALS,
         junctions: JunctionControl = NO_JUNCTION_RULES,
-        turns: TurnRules = NO_TURN_RULES
+        turns: TurnRules = NO_TURN_RULES,
+        paths: PathRules = NO_PATH_RULES
     ) {
         this.graph = graph
         this.planner = planner
@@ -101,6 +103,7 @@ export class Simulation {
         this.junctions = junctions
         this.turns = turns
         this.lanes = new Array<Vehicle[] | undefined>(graph.edges.length)
+        this.paths = paths
     }
 
     /** How many vehicles were taken out of a gridlock and put somewhere else */
@@ -253,7 +256,7 @@ export class Simulation {
             const edgeIndex = vehicle.route[r]
             if (
                 this.signalBlocks(edgeIndex, distance, vehicle.speed) ||
-                this.junctionBlocks(vehicle, edgeIndex, distance) ||
+                this.junctionBlocks(vehicle, edgeIndex, vehicle.route[r + 1], distance) ||
                 this.turnBlocks(vehicle, r, distance)
             ) {
                 this.leader.gap = distance
@@ -278,7 +281,12 @@ export class Simulation {
     }
 
     /** Must this vehicle wait at the end of `edge` for traffic that has priority? */
-    private junctionBlocks(vehicle: Vehicle, edge: number, distance: number): boolean {
+    private junctionBlocks(
+        vehicle: Vehicle,
+        edge: number,
+        next: number | undefined,
+        distance: number
+    ): boolean {
         const conflicts = this.junctions.conflictsOf(edge)
         if (!conflicts || distance > YIELD_DECISION_M) return false
         if (vehicle.waited > FORCE_AFTER_S) return false // has waited long enough: pushes in
@@ -287,10 +295,10 @@ export class Simulation {
 
         const gap = vehicle.waited > PATIENCE_S ? PATIENT_GAP_S : CRITICAL_GAP_S
         for (const other of conflicts.higher) {
-            if (this.approachBusy(other, gap, vehicle, edge, false)) return true
+            if (this.approachBusy(other, gap, vehicle, edge, next, false)) return true
         }
         for (const other of conflicts.equal) {
-            if (this.approachBusy(other, gap, vehicle, edge, true)) return true
+            if (this.approachBusy(other, gap, vehicle, edge, next, true)) return true
         }
         return false
     }
@@ -301,16 +309,25 @@ export class Simulation {
         gap: number,
         waiting: Vehicle,
         waitingEdge: number,
+        waitingNext: number | undefined,
         equalRank: boolean
     ): boolean {
-        if (this.frontBusy(other, 0, gap, waiting, waitingEdge, equalRank)) return true
+        if (this.frontBusy(other, 0, gap, waiting, waitingEdge, waitingNext, equalRank)) return true
 
         // Ring edges of a roundabout are short, so the vehicle about to arrive is often
         // still on the edge before: watch that one too
         const before = this.junctions.upstreamOf(other)
         return (
             before >= 0 &&
-            this.frontBusy(before, this.graph.edges[other].length, gap, waiting, waitingEdge, equalRank)
+            this.frontBusy(
+                before,
+                this.graph.edges[other].length,
+                gap,
+                waiting,
+                waitingEdge,
+                waitingNext,
+                equalRank
+            )
         )
     }
 
@@ -321,11 +338,25 @@ export class Simulation {
         gap: number,
         waiting: Vehicle,
         waitingEdge: number,
+        waitingNext: number | undefined,
         equalRank: boolean
     ): boolean {
         const lane = this.lanes[edge]
         if (!lane || lane.length === 0) return false
         const front = lane[0]
+
+        // Its path may not touch ours at all (a turn into another road, say): then ignore it.
+        // Roundabout rings keep absolute priority over anything entering.
+        if (extra === 0 && waitingNext !== undefined && !this.graph.edges[edge].roundabout) {
+            const frontNext = front.route[front.routeIndex + 1]
+            if (
+                frontNext !== undefined &&
+                !this.paths.cross(waitingEdge, waitingNext, edge, frontNext)
+            ) {
+                return false
+            }
+        }
+
         const distance = this.graph.edges[edge].length - front.offset + extra
 
         if (front.speed > STANDING_MS) {
@@ -356,8 +387,9 @@ export class Simulation {
             const front = lane[0]
             if (front.speed <= STANDING_MS) continue // standing still: not about to enter
 
-            // Oncoming traffic that turns left as well passes on the other side
+            // Oncoming traffic whose path does not cross ours (another left turn, a right turn) passes
             const frontNext = front.route[front.routeIndex + 1]
+            if (frontNext !== undefined && !this.paths.cross(edgeIndex, nextIndex, other, frontNext)) continue
             if (frontNext !== undefined && this.turns.crossesOncoming(other, frontNext)) continue
 
             const toJunction = this.graph.edges[other].length - front.offset

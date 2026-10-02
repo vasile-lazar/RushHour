@@ -78,3 +78,11 @@ export const NO_TURN_RULES: TurnRules = {
     crossesOncoming: () => false,
     oncoming: () => []
 }
+
+/** Whether two paths through the same junction cross or merge. */
+export interface PathRules {
+    cross(fromA: number, toA: number, fromB: number, toB: number): boolean
+}
+
+/** Without path rules every pair of paths conflicts, as before. */
+export const NO_PATH_RULES: PathRules = { cross: () => true }
