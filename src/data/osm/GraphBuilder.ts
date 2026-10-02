@@ -71,7 +71,7 @@ export function buildGraph(name: string, osm: OverpassResponse): RoadGraph {
         const roundabout = way.tags?.junction === 'roundabout'
         const posted = parseSpeedLimit(way.tags?.maxspeed) ?? defaultSpeedLimit(roadClass)
         const speedLimit = roundabout ? Math.min(posted, ROUNDABOUT_SPEED_MS) : posted
-        const lanes = lanesPerDirection(way.tags?.lanes, direction)
+        const lanes = lanesPerDirection(way.tags?.lanes, direction, roadClass)
         
         let segmentStart = 0
         for (let i = 1; i < way.nodes.length; i++) {

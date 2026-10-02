@@ -1,5 +1,5 @@
 ﻿import { describe, expect, it } from 'vitest'
-import { defaultSpeedLimit, directionOf, lanesPerDirection, parseSpeedLimit } from './RoadTags'
+import {defaultLanes, defaultSpeedLimit, directionOf, lanesPerDirection, parseSpeedLimit} from './RoadTags'
 
 describe('parseSpeedLimit', () => {
     it('converts km/h to m/s', () => {
@@ -51,5 +51,22 @@ describe('lanesPerDirection', () => {
     it('falls back to 1 lane when missing or invalid', () => {
         expect(lanesPerDirection(undefined, 'both')).toBe(1)
         expect(lanesPerDirection('abc', 'forward')).toBe(1)
+    })
+})
+
+describe('defaultLanes', () => {
+    it('gives big roads two lanes and everything else one', () => {
+        expect(defaultLanes('primary')).toBe(2)
+        expect(defaultLanes('trunk')).toBe(2)
+        expect(defaultLanes('secondary')).toBe(1)
+        expect(defaultLanes('residential')).toBe(1)
+    })
+})
+
+describe('lanesPerDirection with a road class', () => {
+    it('uses the class default only when the tag is missing', () => {
+        expect(lanesPerDirection(undefined, 'both', 'primary')).toBe(2)
+        expect(lanesPerDirection(undefined, 'both', 'residential')).toBe(1)
+        expect(lanesPerDirection('3', 'forward', 'primary')).toBe(3)
     })
 })
