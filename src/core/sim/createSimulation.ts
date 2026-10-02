@@ -32,7 +32,7 @@ export function createSimulation(graph: RoadGraph, options: SimulationOptions): 
     const junctions =
         options.junctions === false
             ? NO_JUNCTION_RULES
-            : new PriorityJunctions(graph, canDrive, signals)
+            : new PriorityJunctions(graph, canDrive, signals, rng)
     const turns = options.turns === false ? NO_TURN_RULES : new Turns(graph)
     const simulation = new Simulation(
         graph,
