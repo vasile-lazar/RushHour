@@ -32,22 +32,24 @@ const YIELD_APPROACH_MS = 7
 const CRITICAL_GAP_S = 4
 /** After waiting for PATIENCE_S, drivers accept this smaller gap */
 const PATIENT_GAP_S = 2
-const PATIENCE_S = 10
+const PATIENCE_S = 5
 /** After waiting this long a driver pushes in regardless (this also breaks deadlocks) */
-const FORCE_AFTER_S = 25
+const FORCE_AFTER_S = 10
 /** Below this speed a vehicle counts as standing still (m/s) */
 const STANDING_MS = 0.5
 /** A vehicle this close to the junction is about to enter it (m) */
 const NEAR_JUNCTION_M = 10
 /** Speed a vehicle slows down to before a sharp turn (m/s) */
 const TURN_SPEED_MS = 6
+/** A vehicle that has stood still this long is stuck in a gridlock and is put elsewhere (s) */
+const TELEPORT_AFTER_S = 180
 
 interface Vehicle {
     /** Edge indices to drive along, in order */
     route: number[]
     /** Which edge of the route the vehicle is on */
     routeIndex: number
-    /** Position of the front bumper: meters travelled along the current edge */
+    /** Position of the front bumper: meters traveled along the current edge */
     offset: number
     /** Current speed in m/s */
     speed: number
@@ -77,6 +79,7 @@ export class Simulation {
     private readonly occupied: number[] = []
     private readonly leader: Leader = { gap: Infinity, speed: 0 }
     private elapsed = 0
+    private teleported = 0
     private readonly signals: SignalControl
     private readonly junctions: JunctionControl
     private readonly turns: TurnRules
@@ -100,6 +103,18 @@ export class Simulation {
         this.lanes = new Array<Vehicle[] | undefined>(graph.edges.length)
     }
 
+    /** How many vehicles were taken out of a gridlock and put somewhere else */
+    get teleports(): number {
+        return this.teleported
+    }
+
+    /** How many vehicles have been standing still for at least `seconds` */
+    countStanding(seconds: number): number {
+        let count = 0
+        for (const vehicle of this.vehicles) if (vehicle.waited >= seconds) count++
+        return count
+    }
+    
     get vehicleCount(): number {
         return this.vehicles.length
     }
@@ -413,6 +428,11 @@ export class Simulation {
         const accelerated = Math.max(0, vehicle.speed + vehicle.acceleration * dt)
         vehicle.speed = Math.min(accelerated, vehicle.speedCap)
         vehicle.waited = vehicle.speed < STANDING_MS ? vehicle.waited + dt : 0
+        if (vehicle.waited > TELEPORT_AFTER_S) {
+            this.teleported++
+            this.placeRandomly(vehicle) // gridlock: put the vehicle somewhere else
+            return
+        }
         vehicle.offset += vehicle.speed * dt
 
         let edge = edges[vehicle.route[vehicle.routeIndex]]
