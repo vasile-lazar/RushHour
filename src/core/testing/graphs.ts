@@ -6,6 +6,7 @@ interface EdgeSpec {
     speedLimit?: number
     roadClass?: string
     roundabout?: boolean
+    lanes?: number
 }
 
 /** Builds a small RoadGraph for tests, with a straight edge for each spec. */
@@ -23,7 +24,7 @@ export function makeGraph(
             to: spec.to,
             length: Math.hypot(b.x - a.x, b.y - a.y),
             speedLimit: spec.speedLimit ?? 10,
-            lanes: 1,
+            lanes: spec.lanes ?? 1,
             roadClass: spec.roadClass ?? 'residential',
             geometry: [a.x, a.y, b.x, b.y],
             ...(spec.roundabout ? { roundabout: true } : {})

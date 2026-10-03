@@ -9,7 +9,7 @@ import {
     type Rng,
     type RoutePlanner,
     type SignalControl,
-    type TurnRules, PathRules, NO_PATH_RULES
+    type TurnRules, PathRules, NO_PATH_RULES, LaneGuide, NO_LANE_GUIDE
 } from './ports'
 
 /** Vehicle length in meters, used to measure the gap between bumpers */
@@ -45,6 +45,17 @@ const NEAR_JUNCTION_M = 10
 const TURN_SPEED_MS = 6
 /** A vehicle that has stood still this long is stuck in a gridlock and is put elsewhere (s) */
 const TELEPORT_AFTER_S = 180
+/** Vehicles start moving into the right lane for a turn this far before the junction (m) */
+const LANE_PLAN_M = 200
+/** After a lane change, a driver waits this long before changing again (s) */
+const LANE_CHANGE_COOLDOWN_S = 4
+/** The gap needed in the lane beside, ahead of and behind a changing vehicle: this plus a time gap */
+const LANE_MIN_GAP_M = 3
+const LANE_TIME_GAP_S = 0.6
+/** A driver below this share of the speed limit counts as held up */
+const LANE_BLOCKED_RATIO = 0.75
+/** Another lane must have this much more room ahead to be worth changing for (m) */
+const LANE_GAIN_M = 15
 
 interface Vehicle {
     /** Edge indices to drive along, in order */
@@ -61,6 +72,10 @@ interface Vehicle {
     speedCap: number
     /** Seconds spent (nearly) standing still; decides who goes first when equal roads meet */
     waited: number
+    /** Which lane of the current edge, counted from the leftmost (0) */
+    lane: number
+    /** Seconds until the next lane change is allowed */
+    laneCooldown: number
 }
 
 /** Result of a leader search, reused to avoid creating an object per vehicle per step */
@@ -75,17 +90,24 @@ export class Simulation {
     private readonly rng: Rng
     private readonly model: CarFollowingModel
     private readonly vehicles: Vehicle[] = []
-    /** Per edge: the vehicles on it, front-most first. Rebuilt every step. */
+    /** Per lane slot (see laneBase): the vehicles in it, front-most first. Rebuilt every step. */
     private readonly lanes: Array<Vehicle[] | undefined>
-    /** Edges that currently hold at least one vehicle */
+    /** Per edge: index of its first lane slot; its slots are laneBase[e] .. laneBase[e + 1] - 1 */
+    private readonly laneBase: Int32Array
+    /** Per slot: the edge it belongs to */
+    private readonly slotEdge: Int32Array
+    /** Lane slots that currently hold at least one vehicle */
     private readonly occupied: number[] = []
     private readonly leader: Leader = { gap: Infinity, speed: 0 }
     private elapsed = 0
     private teleported = 0
+    private lastTeleportEdge = -1
     private readonly signals: SignalControl
     private readonly junctions: JunctionControl
     private readonly turns: TurnRules
     private readonly paths: PathRules
+    private readonly guide: LaneGuide
+    private readonly changesLanes: boolean
 
     constructor(
         graph: RoadGraph,
@@ -95,7 +117,8 @@ export class Simulation {
         signals: SignalControl = NO_SIGNALS,
         junctions: JunctionControl = NO_JUNCTION_RULES,
         turns: TurnRules = NO_TURN_RULES,
-        paths: PathRules = NO_PATH_RULES
+        paths: PathRules = NO_PATH_RULES,
+        guide: LaneGuide = NO_LANE_GUIDE
     ) {
         this.graph = graph
         this.planner = planner
@@ -104,13 +127,35 @@ export class Simulation {
         this.signals = signals
         this.junctions = junctions
         this.turns = turns
-        this.lanes = new Array<Vehicle[] | undefined>(graph.edges.length)
+        this.laneBase = new Int32Array(graph.edges.length + 1)
+        graph.edges.forEach((edge, i) => {
+            this.laneBase[i + 1] = this.laneBase[i] + Math.max(1, edge.lanes)
+        })
+        this.slotEdge = new Int32Array(this.laneBase[graph.edges.length])
+        graph.edges.forEach((_, i) => this.slotEdge.fill(i, this.laneBase[i], this.laneBase[i + 1]))
+        this.lanes = new Array<Vehicle[] | undefined>(this.laneBase[graph.edges.length])
         this.paths = paths
+        this.guide = guide
+        this.changesLanes = guide !== NO_LANE_GUIDE
     }
 
+    private laneCount(edge: number): number {
+        return this.laneBase[edge + 1] - this.laneBase[edge]
+    }
+
+    /** The queue slot of a lane; a lane number beyond the road's lanes uses its last lane. */
+    private slot(edge: number, lane: number): number {
+        return this.laneBase[edge] + Math.min(lane, this.laneCount(edge) - 1)
+    }
+    
     /** How many vehicles were taken out of a gridlock and put somewhere else */
     get teleports(): number {
         return this.teleported
+    }
+
+    /** The edge the most recently teleported vehicle was stuck on, or -1 */
+    get lastTeleport(): number {
+        return this.lastTeleportEdge
     }
 
     /** How many vehicles have been standing still for at least `seconds` */
@@ -119,113 +164,66 @@ export class Simulation {
         for (const vehicle of this.vehicles) if (vehicle.waited >= seconds) count++
         return count
     }
-    /** Debug: describes vehicles that have stood still for `seconds`, and what they wait for. */
-    private describeFront(edge: number): string {
-        const lane = this.lanes[edge]
-        if (!lane || lane.length === 0) return `${edge}:empty`
-        const f = lane[0]
-        const to = (this.graph.edges[edge].length - f.offset).toFixed(0)
-        return `${edge}:${to}m v=${f.speed.toFixed(1)} w=${f.waited.toFixed(0)} next=${f.route[f.routeIndex + 1] ?? '-'}`
-    }
 
-    /** Debug: follows each standing queue to its head, or to a cycle, and explains the head. */
-    traceQueue(seconds: number, limit = 4): string[] {
-        this.rebuildLanes()
-        const edges = this.graph.edges
-        const out: string[] = []
-        const done = new Set<number>()
-        for (const start of this.vehicles) {
-            if (start.waited < seconds) continue
-            const chain: number[] = []
-            let last = start
-            let e = start.route[start.routeIndex]
-            let verdict = ''
-            for (;;) {
-                if (chain.includes(e)) {
-                    verdict = 'CYCLE'
-                    break
-                }
-                chain.push(e)
-                const f = (this.lanes[e] as Vehicle[])[0]
-                if (f.waited < seconds) {
-                    verdict = 'head is moving'
-                    break
-                }
-                last = f
-                const n = f.route[f.routeIndex + 1]
-                if (n === undefined) {
-                    verdict = 'head at route end'
-                    break
-                }
-                const nextLane = this.lanes[n]
-                if (!nextLane || nextLane.length === 0) {
-                    verdict = 'head blocked by rules, next edge empty'
-                    break
-                }
-                e = n
-            }
-            const le = last.route[last.routeIndex]
-            if (done.has(le)) continue
-            done.add(le)
-            const ln = last.route[last.routeIndex + 1]
-            const node = this.graph.nodes[edges[le].to]
-            const c = this.junctions.conflictsOf(le)
-            out.push(
-                `${verdict}: ${chain.join(' > ')}\n` +
-                `   last standing: node (${node.x.toFixed(0)}, ${node.y.toFixed(0)}) edge ${le}->${ln ?? '-'} ` +
-                `${edges[le].roadClass}, ${(edges[le].length - last.offset).toFixed(0)}m to end, ` +
-                `w=${last.waited.toFixed(0)}, signal=${this.signals.stateOf(le, this.elapsed)}, ` +
-                `left=${ln !== undefined && this.turns.crossesOncoming(le, ln)}\n` +
-                `   higher: ${(c?.higher ?? []).map((o) => this.describeFront(o)).join(' | ')}\n` +
-                `   equal: ${(c?.equal ?? []).map((o) => this.describeFront(o)).join(' | ')}\n` +
-                `   oncoming: ${this.turns.oncoming(le).map((o) => this.describeFront(o)).join(' | ')}\n` +
-                `   next edge: ${ln === undefined ? '-' : this.describeFront(ln)}\n` +
-                `   scan: ${this.scanRoute(last)}`
-            )
-            if (out.length >= limit) break
-        }
-        return out
-    }
-    /** Debug: what blocks this vehicle along its route? */
-    private scanRoute(vehicle: Vehicle): string {
-        const edges = this.graph.edges
-        let distance = edges[vehicle.route[vehicle.routeIndex]].length - vehicle.offset
-        const parts: string[] = []
-        for (let r = vehicle.routeIndex; r < vehicle.route.length && distance < LOOKAHEAD_M; r++) {
-            const e = vehicle.route[r]
-            const flags: string[] = []
-            if (this.signalBlocks(e, distance, vehicle.speed)) flags.push('signal')
-            if (this.junctionBlocks(vehicle, e, vehicle.route[r + 1], distance)) flags.push('junction')
-            if (this.turnBlocks(vehicle, r, distance)) flags.push('turn')
-            parts.push(`${e}@${distance.toFixed(0)}m[${flags.join(',')}]`)
-            if (r + 1 >= vehicle.route.length) break
-            distance += edges[vehicle.route[r + 1]].length
-        }
-        return `${parts.join(' ')} acc=${vehicle.acceleration.toFixed(2)} cap=${vehicle.speedCap.toFixed(1)} v=${vehicle.speed.toFixed(2)}`
-    }
-    /** Debug: follows who each standing vehicle waits behind, to the head of the queue or a cycle. */
+    /** Debug: follows who each standing vehicle waits behind, to the head of its queue or a cycle. */
     traceLeaders(seconds: number, limit = 4): string[] {
         this.rebuildLanes()
         const edges = this.graph.edges
         const leaderOf = (v: Vehicle): Vehicle | undefined => {
-            const lane = this.lanes[v.route[v.routeIndex]] as Vehicle[]
-            const i = lane.indexOf(v)
-            if (i > 0) return lane[i - 1]
-            let distance = edges[v.route[v.routeIndex]].length - v.offset
+            const edge = v.route[v.routeIndex]
+            const queue = this.lanes[this.slot(edge, v.lane)] as Vehicle[]
+            const i = queue.indexOf(v)
+            if (i > 0) return queue[i - 1]
+            let distance = edges[edge].length - v.offset
+            let lane = v.lane
             for (let r = v.routeIndex + 1; r < v.route.length && distance < LOOKAHEAD_M; r++) {
-                const l = this.lanes[v.route[r]]
-                if (l && l.length > 0 && l[l.length - 1] !== v) return l[l.length - 1]
+                lane = this.guide.laneAfter(v.route[r - 1], v.route[r], lane)
+                const ahead = this.lanes[this.slot(v.route[r], lane)]
+                if (ahead && ahead.length > 0 && ahead[ahead.length - 1] !== v) return ahead[ahead.length - 1]
                 distance += edges[v.route[r]].length
             }
             return undefined
         }
         const label = (v: Vehicle): string => {
             const e = v.route[v.routeIndex]
-            return `${e}@${(edges[e].length - v.offset).toFixed(0)}m v=${v.speed.toFixed(1)} w=${v.waited.toFixed(0)}`
+            return `${e}.${v.lane}@${(edges[e].length - v.offset).toFixed(0)}m v=${v.speed.toFixed(1)} w=${v.waited.toFixed(0)}`
         }
+        const scan = (v: Vehicle): string => {
+            let distance = edges[v.route[v.routeIndex]].length - v.offset
+            const parts: string[] = []
+            for (let r = v.routeIndex; r < v.route.length && distance < LOOKAHEAD_M; r++) {
+                const e = v.route[r]
+                const flags: string[] = []
+                if (this.signalBlocks(e, distance, v.speed)) flags.push('signal')
+                if (this.junctionBlocks(v, e, this.exitOf(v.route, r), distance)) flags.push('junction')
+                if (this.turnBlocks(v, r, distance)) flags.push('turn')
+                parts.push(`${e}@${distance.toFixed(0)}m[${flags.join(',')}]`)
+                if (r + 1 >= v.route.length) break
+                distance += edges[v.route[r + 1]].length
+            }
+            return `${parts.join(' ')} acc=${v.acceleration.toFixed(2)} cap=${v.speedCap.toFixed(1)} lane=${v.lane}`
+        }
+
+        const fronts = (list: readonly number[]): string =>
+            list
+                .map((e) => {
+                    const parts: string[] = []
+                    for (let lane = 0; lane < this.laneCount(e); lane++) {
+                        const queue = this.lanes[this.laneBase[e] + lane]
+                        if (!queue || queue.length === 0) continue
+                        const f = queue[0]
+                        parts.push(
+                            `${e}.${lane}:${(edges[e].length - f.offset).toFixed(0)}m v=${f.speed.toFixed(1)} ` +
+                            `w=${f.waited.toFixed(0)} exit=${this.exitOf(f.route, f.routeIndex) ?? '-'}`
+                        )
+                    }
+                    return parts.length > 0 ? parts.join(', ') : `${e}:empty`
+                })
+                .join(' | ')
 
         const out: string[] = []
         const seen = new Set<Vehicle>()
+        let flowing = 0
         for (const start of this.vehicles) {
             if (start.waited < seconds || seen.has(start)) continue
             const chain: Vehicle[] = []
@@ -238,8 +236,8 @@ export class Simulation {
                 }
                 chain.push(v)
                 seen.add(v)
-                if (v.waited < seconds) {
-                    verdict = 'head is moving'
+                if (chain.length > 300) {
+                    verdict = 'chain too long'
                     break
                 }
                 const ahead = leaderOf(v)
@@ -250,13 +248,24 @@ export class Simulation {
                 v = ahead
             }
             const head = chain[chain.length - 1]
+            if (verdict !== 'CYCLE' && head.speed > 1.5) {
+                flowing++ // a slow queue behind a head that is moving: not a jam
+                continue
+            }
             const node = this.graph.nodes[edges[head.route[head.routeIndex]].to]
+            const headEdge = head.route[head.routeIndex]
+            const conflicts = this.junctions.conflictsOf(headEdge)
             out.push(
-                `${verdict} (${chain.length} vehicles): ${chain.slice(0, 12).map(label).join(' > ')}\n` +
-                `   head at node (${node.x.toFixed(0)}, ${node.y.toFixed(0)}): ${this.scanRoute(head)}`
+                `${verdict} (${chain.length} vehicles): ${chain.slice(-6).map(label).join(' > ')}\n` +
+                `   head at node (${node.x.toFixed(0)}, ${node.y.toFixed(0)}): ${scan(head)}\n` +
+                `   exit=${this.exitOf(head.route, head.routeIndex) ?? '-'}\n` +
+                `   higher: ${fronts(conflicts?.higher ?? [])}\n` +
+                `   equal: ${fronts(conflicts?.equal ?? [])}\n` +
+                `   oncoming: ${fronts(this.turns.oncoming(headEdge))}`
             )
             if (out.length >= limit) break
         }
+        out.push(`queues behind a moving head: ${flowing}`)
         return out
     }
     
@@ -278,7 +287,9 @@ export class Simulation {
                 speed: 0,
                 acceleration: 0,
                 speedCap: 0,
-                waited: 0
+                waited: 0,
+                lane: 0,
+                laneCooldown: 0,
             }
             this.placeRandomly(vehicle)
             this.vehicles.push(vehicle)
@@ -286,22 +297,25 @@ export class Simulation {
     }
 
     /** Puts a vehicle at an exact spot. Handy for tests and hand-made scenarios. */
-    addVehicle(edgeIndex: number, offset: number, speed?: number): void {
+    addVehicle(edgeIndex: number, offset: number, speed?: number, lane = 0): void {
         const edge = this.graph.edges[edgeIndex]
         this.vehicles.push({
             route: this.planner.plan(edgeIndex, this.rng),
             routeIndex: 0,
+            lane: Math.min(lane, this.laneCount(edgeIndex) - 1),
             offset,
             speed: speed ?? edge.speedLimit,
             acceleration: 0,
             speedCap: edge.speedLimit,
-            waited: 0
+            waited: 0,
+            laneCooldown: 0,
         })
     }
 
     /** Advances the whole simulation by `dt` seconds. */
     step(dt: number): void {
         this.rebuildLanes()
+        this.changeLanes(dt)
         // Everyone decides based on the same snapshot...
         this.decide()
         // ...and only then does everyone move, so the update order cannot matter
@@ -329,24 +343,24 @@ export class Simulation {
         }
     }
 
-    /** Groups vehicles by edge and orders each group front to back. */
+    /** Groups vehicles by lane and orders each group front to back. */
     private rebuildLanes(): void {
-        for (const edge of this.occupied) (this.lanes[edge] as Vehicle[]).length = 0
+        for (const slot of this.occupied) (this.lanes[slot] as Vehicle[]).length = 0
         this.occupied.length = 0
 
         for (const vehicle of this.vehicles) {
-            const edge = vehicle.route[vehicle.routeIndex]
-            let lane = this.lanes[edge]
-            if (!lane) {
-                lane = []
-                this.lanes[edge] = lane
+            const slot = this.slot(vehicle.route[vehicle.routeIndex], vehicle.lane)
+            let queue = this.lanes[slot]
+            if (!queue) {
+                queue = []
+                this.lanes[slot] = queue
             }
-            if (lane.length === 0) this.occupied.push(edge)
-            lane.push(vehicle)
+            if (queue.length === 0) this.occupied.push(slot)
+            queue.push(vehicle)
         }
 
-        for (const edge of this.occupied) {
-            ;(this.lanes[edge] as Vehicle[]).sort((a, b) => b.offset - a.offset)
+        for (const slot of this.occupied) {
+            ;(this.lanes[slot] as Vehicle[]).sort((a, b) => b.offset - a.offset)
         }
     }
 
@@ -354,8 +368,9 @@ export class Simulation {
     private decide(): void {
         const edges = this.graph.edges
 
-        for (const edgeIndex of this.occupied) {
-            const lane = this.lanes[edgeIndex] as Vehicle[]
+        for (const slotIndex of this.occupied) {
+            const lane = this.lanes[slotIndex] as Vehicle[]
+            const edgeIndex = this.slotEdge[slotIndex]
             const edge = edges[edgeIndex]
 
             for (let i = 0; i < lane.length; i++) {
@@ -393,7 +408,8 @@ export class Simulation {
         const edges = this.graph.edges
         // Distance from the front bumper to the end of edge `r`
         let distance = edges[vehicle.route[vehicle.routeIndex]].length - vehicle.offset
-
+        let lane = vehicle.lane
+        
         for (let r = vehicle.routeIndex; r < vehicle.route.length && distance < LOOKAHEAD_M; r++) {
             const edgeIndex = vehicle.route[r]
             if (
@@ -408,9 +424,10 @@ export class Simulation {
             if (r + 1 >= vehicle.route.length) break
 
             const nextEdge = vehicle.route[r + 1]
-            const lane = this.lanes[nextEdge]
-            if (lane && lane.length > 0) {
-                const rearmost = lane[lane.length - 1]
+            lane = this.guide.laneAfter(edgeIndex, nextEdge, lane)
+            const queue = this.lanes[this.slot(nextEdge, lane)]
+            if (queue && queue.length > 0) {
+                const rearmost = queue[queue.length - 1]
                 if (rearmost !== vehicle) {
                     this.leader.gap = distance + rearmost.offset - VEHICLE_LENGTH_M
                     this.leader.speed = rearmost.speed
@@ -491,10 +508,26 @@ export class Simulation {
         waitingNext: number | undefined,
         equalRank: boolean
     ): boolean {
-        const lane = this.lanes[edge]
-        if (!lane || lane.length === 0) return false
-        const front = lane[0]
+        for (let lane = 0; lane < this.laneCount(edge); lane++) {
+            const queue = this.lanes[this.laneBase[edge] + lane]
+            if (!queue || queue.length === 0) continue
+            if (this.vehicleBusy(queue[0], edge, extra, gap, waiting, waitingEdge, waitingNext, equalRank)) {
+                return true
+            }
+        }
+        return false
+    }
 
+    private vehicleBusy(
+        front: Vehicle,
+        edge: number,
+        extra: number,
+        gap: number,
+        waiting: Vehicle,
+        waitingEdge: number,
+        waitingNext: number | undefined,
+        equalRank: boolean
+    ): boolean {
         // Its path may not touch ours at all (a turn into another road, say): then ignore it.
         // Roundabout rings keep absolute priority over anything entering.
         if (extra === 0 && waitingNext !== undefined && !this.graph.edges[edge].roundabout) {
@@ -532,18 +565,20 @@ export class Simulation {
 
         const gap = vehicle.waited > PATIENCE_S ? PATIENT_GAP_S : CRITICAL_GAP_S
         for (const other of this.turns.oncoming(edgeIndex)) {
-            const lane = this.lanes[other]
-            if (!lane || lane.length === 0) continue
-            const front = lane[0]
-            if (front.speed <= STANDING_MS) continue // standing still: not about to enter
+            for (let lane = 0; lane < this.laneCount(other); lane++) {
+                const queue = this.lanes[this.laneBase[other] + lane]
+                if (!queue || queue.length === 0) continue
+                const front = queue[0]
+                if (front.speed <= STANDING_MS) continue // standing still: not about to enter
 
-            // Oncoming traffic whose path does not cross ours (another left turn, a right turn) passes
-            const frontNext = this.exitOf(front.route, front.routeIndex)
-            if (frontNext !== undefined && !this.paths.cross(edgeIndex, nextIndex, other, frontNext)) continue
-            if (frontNext !== undefined && this.turns.crossesOncoming(other, frontNext)) continue
+                // Oncoming traffic whose path does not cross ours (another left turn, a right turn) passes
+                const frontNext = this.exitOf(front.route, front.routeIndex)
+                if (frontNext !== undefined && !this.paths.cross(edgeIndex, nextIndex, other, frontNext)) continue
+                if (frontNext !== undefined && this.turns.crossesOncoming(other, frontNext)) continue
 
-            const toJunction = this.graph.edges[other].length - front.offset
-            if (toJunction < NEAR_JUNCTION_M || toJunction / front.speed < gap) return true
+                const toJunction = this.graph.edges[other].length - front.offset
+                if (toJunction < NEAR_JUNCTION_M || toJunction / front.speed < gap) return true
+            }
         }
         return false
     }
@@ -612,6 +647,7 @@ export class Simulation {
         vehicle.waited = vehicle.speed < STANDING_MS ? vehicle.waited + dt : 0
         if (vehicle.waited > TELEPORT_AFTER_S) {
             this.teleported++
+            this.lastTeleportEdge = vehicle.route[vehicle.routeIndex]
             this.placeRandomly(vehicle) // gridlock: put the vehicle somewhere else
             return
         }
@@ -621,23 +657,147 @@ export class Simulation {
         // Possibly cross several short edges in one step
         while (vehicle.offset >= edge.length) {
             vehicle.offset -= edge.length
+            const left = vehicle.route[vehicle.routeIndex]
             vehicle.routeIndex++
             if (vehicle.routeIndex >= vehicle.route.length) {
                 this.placeRandomly(vehicle) // the road ended: reappear somewhere else
                 return
             }
-            edge = edges[vehicle.route[vehicle.routeIndex]]
+            const entered = vehicle.route[vehicle.routeIndex]
+            edge = edges[entered]
+            vehicle.lane = Math.min(
+                this.guide.laneAfter(left, entered, vehicle.lane),
+                this.laneCount(entered) - 1
+            )
         }
     }
 
+    /** Writes each vehicle's lane (0 = leftmost) into `out`. */
+    writeLanes(out: Uint8Array): void {
+        for (let i = 0; i < this.vehicles.length; i++) out[i] = this.vehicles[i].lane
+    }
+
+    /** Lets vehicles move to the lane beside them, one at a time, so two cannot take the same gap. */
+    private changeLanes(dt: number): void {
+        if (!this.changesLanes) return
+        for (const vehicle of this.vehicles) {
+            if (vehicle.laneCooldown > 0) {
+                vehicle.laneCooldown -= dt
+                continue
+            }
+            const edgeIndex = vehicle.route[vehicle.routeIndex]
+            const count = this.laneCount(edgeIndex)
+            if (count < 2) continue
+
+            const target = this.chooseLane(vehicle, edgeIndex, count)
+            if (target !== vehicle.lane && this.laneIsFree(vehicle, edgeIndex, target)) {
+                this.moveToLane(vehicle, edgeIndex, target)
+                vehicle.laneCooldown = LANE_CHANGE_COOLDOWN_S
+            }
+        }
+    }
+
+    /** The lane the vehicle would like to be in now: its own, or the one beside it. */
+    private chooseLane(vehicle: Vehicle, edgeIndex: number, count: number): number {
+        const edge = this.graph.edges[edgeIndex]
+        const allowed =
+            edge.length - vehicle.offset < LANE_PLAN_M
+                ? this.guide.lanesFor(edgeIndex, this.exitOf(vehicle.route, vehicle.routeIndex))
+                : undefined
+
+        // Wrong lane for the coming turn: move one lane toward the nearest right one
+        if (allowed && !allowed.includes(vehicle.lane)) {
+            let nearest = allowed[0]
+            for (const lane of allowed) {
+                if (Math.abs(lane - vehicle.lane) < Math.abs(nearest - vehicle.lane)) nearest = lane
+            }
+            return vehicle.lane + Math.sign(nearest - vehicle.lane)
+        }
+
+        // Held up by a slower vehicle: look for a neighbouring lane with clearly more room
+        if (vehicle.speed >= LANE_BLOCKED_RATIO * edge.speedLimit) return vehicle.lane
+        const queue = this.lanes[this.slot(edgeIndex, vehicle.lane)] as Vehicle[]
+        const own = queue.indexOf(vehicle)
+        if (own <= 0) return vehicle.lane
+        let best = vehicle.lane
+        let bestRoom = queue[own - 1].offset - VEHICLE_LENGTH_M - vehicle.offset + LANE_GAIN_M
+        for (const candidate of [vehicle.lane - 1, vehicle.lane + 1]) {
+            if (candidate < 0 || candidate >= count) continue
+            if (allowed && !allowed.includes(candidate)) continue
+            const room = this.roomAhead(vehicle, edgeIndex, candidate)
+            if (room > bestRoom) {
+                best = candidate
+                bestRoom = room
+            }
+        }
+        return best
+    }
+
+    /** Free road ahead of the vehicle's position in a lane, bumper to bumper. */
+    private roomAhead(vehicle: Vehicle, edge: number, lane: number): number {
+        const queue = this.lanes[this.slot(edge, lane)]
+        if (!queue) return Infinity
+        let room = Infinity
+        for (const other of queue) {
+            if (other.offset < vehicle.offset) break
+            room = other.offset - VEHICLE_LENGTH_M - vehicle.offset
+        }
+        return room
+    }
+
+    /** Is there enough space in front of and behind the vehicle's position in that lane? */
+    private laneIsFree(vehicle: Vehicle, edge: number, lane: number): boolean {
+        const queue = this.lanes[this.slot(edge, lane)]
+        if (!queue) return true
+        let ahead: Vehicle | undefined
+        let behind: Vehicle | undefined
+        for (const other of queue) {
+            if (other.offset >= vehicle.offset) {
+                ahead = other
+            } else {
+                behind = other
+                break
+            }
+        }
+        if (ahead) {
+            const gap = ahead.offset - VEHICLE_LENGTH_M - vehicle.offset
+            if (gap < LANE_MIN_GAP_M + LANE_TIME_GAP_S * vehicle.speed) return false
+        }
+        if (behind) {
+            const gap = vehicle.offset - VEHICLE_LENGTH_M - behind.offset
+            if (gap < LANE_MIN_GAP_M + LANE_TIME_GAP_S * behind.speed) return false
+        }
+        return true
+    }
+
+    private moveToLane(vehicle: Vehicle, edge: number, target: number): void {
+        const from = this.lanes[this.slot(edge, vehicle.lane)] as Vehicle[]
+        from.splice(from.indexOf(vehicle), 1)
+
+        const slot = this.slot(edge, target)
+        let to = this.lanes[slot]
+        if (!to) {
+            to = []
+            this.lanes[slot] = to
+        }
+        if (to.length === 0) this.occupied.push(slot)
+        let at = 0
+        while (at < to.length && to[at].offset >= vehicle.offset) at++
+        to.splice(at, 0, vehicle)
+        vehicle.lane = target
+    }
+    
     private placeRandomly(vehicle: Vehicle): void {
         const start = this.planner.randomStart(this.rng)
         const edge = this.graph.edges[start]
+        const count = this.laneCount(start)
         vehicle.route = this.planner.plan(start, this.rng)
         vehicle.routeIndex = 0
+        vehicle.lane = count > 1 ? Math.floor(this.rng() * count) : 0
         vehicle.offset = this.rng() * edge.length
         vehicle.speed = edge.speedLimit
         vehicle.acceleration = 0
         vehicle.speedCap = edge.speedLimit
+        vehicle.laneCooldown = 0
     }
 }

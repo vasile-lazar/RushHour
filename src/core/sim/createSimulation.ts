@@ -1,21 +1,23 @@
-﻿import type { RoadGraph } from '../graph/types'
-import { createRng } from '../util/random'
-import { IdmModel } from './models/Idm'
+﻿import type {RoadGraph} from '../graph/types'
+import {createRng} from '../util/random'
+import {IdmModel} from './models/Idm'
 import {
     NO_SIGNALS,
     type CarFollowingModel,
     type EdgeFilter,
     NO_JUNCTION_RULES,
     NO_TURN_RULES,
-    NO_PATH_RULES
+    NO_PATH_RULES,
+    NO_LANE_GUIDE
 } from './ports'
-import { isDrivable } from './roadRules'
-import { RandomWalkPlanner } from './routing/RandomWalkPlanner'
-import { Simulation } from './Simulation'
-import { TrafficSignals } from './signals/TrafficSignals'
-import { PriorityJunctions } from './junctions/PriorityJunctions'
-import { Turns } from './junctions/Turns'
+import {isDrivable} from './roadRules'
+import {RandomWalkPlanner} from './routing/RandomWalkPlanner'
+import {Simulation} from './Simulation'
+import {TrafficSignals} from './signals/TrafficSignals'
+import {PriorityJunctions} from './junctions/PriorityJunctions'
+import {Turns} from './junctions/Turns'
 import {Movements} from "@core/sim/junctions/Movements";
+import {TurnLaneGuide} from './lanes/TurnLaneGuide'
 
 export interface SimulationOptions {
     vehicleCount: number
@@ -29,6 +31,8 @@ export interface SimulationOptions {
     junctions?: boolean
     /** Set to false to run without left-turn yielding and turn slowdowns (default: on) */
     turns?: boolean
+    /** Set to false to run without turn lanes and lane changing (default: on) */
+    lanes?: boolean
 }
 
 export function createSimulation(graph: RoadGraph, options: SimulationOptions): Simulation {
@@ -43,6 +47,7 @@ export function createSimulation(graph: RoadGraph, options: SimulationOptions): 
             : new PriorityJunctions(graph, canDrive, signals, rng)
     const turns = options.turns === false ? NO_TURN_RULES : new Turns(graph)
     const paths = options.junctions === false ? NO_PATH_RULES : new Movements(graph)
+    const guide = options.lanes === false ? NO_LANE_GUIDE : new TurnLaneGuide(graph, canDrive, junctions)
     const simulation = new Simulation(
         graph,
         planner,
@@ -51,7 +56,8 @@ export function createSimulation(graph: RoadGraph, options: SimulationOptions): 
         signals,
         junctions,
         turns,
-        paths
+        paths,
+        guide
     )
     simulation.spawn(options.vehicleCount)
     return simulation

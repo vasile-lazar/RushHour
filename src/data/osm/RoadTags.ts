@@ -51,13 +51,28 @@ export function directionOf(tags: Tags): Direction {
     return 'both'
 }
 
+/** Lanes per direction when OSM has no usable "lanes" tag: the big roads have two. */
+export function defaultLanes(roadClass: string): number {
+    switch (roadClass) {
+        case 'motorway':
+        case 'trunk':
+        case 'primary':
+            return 2
+        default:
+            return 1
+    }
+}
 
 /**
  * OSM's "lanes" counts both directions on a two-way road,
  * but our edges are per direction, so split it in that case.
  */
-export function lanesPerDirection(value: string | undefined, direction: Direction): number {
+export function lanesPerDirection(
+    value: string | undefined,
+    direction: Direction,
+    roadClass = ''
+): number {
     const total = Number.parseInt(value ?? '', 10)
-    if (!(total > 0)) return 1
+    if (!(total > 0)) return defaultLanes(roadClass)
     return direction === 'both' ? Math.max(1, Math.floor(total / 2)) : total
 }
