@@ -89,3 +89,17 @@ export interface PathRules {
 
 /** Without path rules every pair of paths conflicts, as before. */
 export const NO_PATH_RULES: PathRules = { cross: () => true }
+
+/** Which lanes a vehicle must be in for a turn, and which lane it ends up in afterwards. */
+export interface LaneGuide {
+    /** Lanes (0 = leftmost) from which `exit` can be taken after the junction at the end of `edge`; undefined means any. */
+    lanesFor(edge: number, exit: number | undefined): readonly number[] | undefined
+    /** The lane a vehicle ends up in on `to`, coming from `fromLane` of `from`. */
+    laneAfter(from: number, to: number, fromLane: number): number
+}
+
+/** No lane logic: vehicles keep their lane, and never change it. */
+export const NO_LANE_GUIDE: LaneGuide = {
+    lanesFor: () => undefined,
+    laneAfter: (_from, _to, fromLane) => fromLane
+}

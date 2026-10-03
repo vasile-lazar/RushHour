@@ -1,6 +1,16 @@
 ﻿import { buildAdjacency } from '../../graph/adjacency'
 import type { RoadGraph } from '../../graph/types'
 import type { EdgeFilter, Rng, RoutePlanner } from '../ports'
+import {endHeading, startHeading, wrapAngle} from "@core/graph/geometry";
+
+/** The sharpest turn drivers accept, in radians (positive = left). Beyond it, that way is not an option. */
+export interface TurnLimits {
+    left: number
+    right: number
+}
+
+/** A left turn past 120° is a U-turn in disguise; a sharp right turn (a branch back) is more common. */
+export const DEFAULT_TURN_LIMITS: TurnLimits = { left: (2 * Math.PI) / 3, right: (5 * Math.PI) / 6 }
 
 export class RandomWalkPlanner implements RoutePlanner {
     private readonly graph: RoadGraph
@@ -10,10 +20,21 @@ export class RandomWalkPlanner implements RoutePlanner {
     private readonly startEdges: number[]
     /** cumulativeLength[i] = total length of startEdges[0..i], for picking edges in proportion to length */
     private readonly cumulativeLength: number[] = []
+    private readonly limits: TurnLimits
+    private readonly endHeadings: Float64Array
+    private readonly startHeadings: Float64Array
 
-    constructor(graph: RoadGraph, canDrive: EdgeFilter, maxEdges = 60) {
+    constructor(
+        graph: RoadGraph,
+        canDrive: EdgeFilter,
+        maxEdges = 60,
+        limits: TurnLimits = DEFAULT_TURN_LIMITS
+    ) {
         this.graph = graph
         this.maxEdges = maxEdges
+        this.limits = limits
+        this.endHeadings = Float64Array.from(graph.edges, (edge) => endHeading(edge.geometry))
+        this.startHeadings = Float64Array.from(graph.edges, (edge) => startHeading(edge.geometry))
         this.outgoing = buildAdjacency(graph).map((edges) =>
             edges.filter((index) => canDrive(graph.edges[index]))
         )
@@ -54,11 +75,19 @@ export class RandomWalkPlanner implements RoutePlanner {
 
             // Prefer not to turn straight back, unless that is the only way
             const forward = options.filter((index) => this.graph.edges[index].to !== edge.from)
-            const pool = forward.length > 0 ? forward : options
-
+            const reachable = forward.length > 0 ? forward : options
+            // Skip turns that are too sharp, unless every way is
+            const gentle = reachable.filter((index) => this.isGentle(current, index))
+            const pool = gentle.length > 0 ? gentle : reachable
+            
             current = pool[Math.floor(rng() * pool.length)]
             route.push(current)
         }
         return route
+    }
+
+    private isGentle(from: number, to: number): boolean {
+        const angle = wrapAngle(this.startHeadings[to] - this.endHeadings[from])
+        return angle >= 0 ? angle <= this.limits.left : -angle <= this.limits.right
     }
 }
