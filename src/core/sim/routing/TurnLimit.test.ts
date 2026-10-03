@@ -37,3 +37,32 @@ describe('RandomWalkPlanner turn limits', () => {
         expect(planner.plan(0, createRng(1))).toEqual([0, 1])
     })
 })
+
+describe('RandomWalkPlanner loops', () => {
+    // 0: a -> b, 1: b -> c, then from c either back to a (edge 2) or on to d (edge 3);
+    // every turn is within the sharp-turn limits, so only the loop rule can exclude edge 2
+    const points: Array<[number, number]> = [[0, 50], [100, 0], [100, 100], [200, 100]]
+
+    it('does not lead a vehicle back to a node it just left', () => {
+        const graph = makeGraph(points, [
+            { from: 0, to: 1 },
+            { from: 1, to: 2 },
+            { from: 2, to: 0 },
+            { from: 2, to: 3 }
+        ])
+        const planner = new RandomWalkPlanner(graph, all, 3)
+        for (let seed = 1; seed <= 60; seed++) {
+            expect(planner.plan(0, createRng(seed))).toEqual([0, 1, 3])
+        }
+    })
+
+    it('still goes back when it is the only way', () => {
+        const graph = makeGraph(points, [
+            { from: 0, to: 1 },
+            { from: 1, to: 2 },
+            { from: 2, to: 0 }
+        ])
+        const planner = new RandomWalkPlanner(graph, all, 3)
+        expect(planner.plan(0, createRng(1))).toEqual([0, 1, 2])
+    })
+})

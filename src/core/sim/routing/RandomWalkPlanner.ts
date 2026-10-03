@@ -3,6 +3,9 @@ import type { RoadGraph } from '../../graph/types'
 import type { EdgeFilter, Rng, RoutePlanner } from '../ports'
 import {endHeading, startHeading, wrapAngle} from "@core/graph/geometry";
 
+/** A route may not return to a node it passed within this many edges (no driving round short loops). */
+const RECENT_EDGES = 6
+
 /** The sharpest turn drivers accept, in radians (positive = left). Beyond it, that way is not an option. */
 export interface TurnLimits {
     left: number
@@ -78,7 +81,10 @@ export class RandomWalkPlanner implements RoutePlanner {
             const reachable = forward.length > 0 ? forward : options
             // Skip turns that are too sharp, unless every way is
             const gentle = reachable.filter((index) => this.isGentle(current, index))
-            const pool = gentle.length > 0 ? gentle : reachable
+            const allowed = gentle.length > 0 ? gentle : reachable
+            // Do not drive round a short loop: skip roads that lead back to somewhere just passed
+            const fresh = allowed.filter((index) => !this.leadsBack(route, index))
+            const pool = fresh.length > 0 ? fresh : allowed
             
             current = pool[Math.floor(rng() * pool.length)]
             route.push(current)
@@ -89,5 +95,14 @@ export class RandomWalkPlanner implements RoutePlanner {
     private isGentle(from: number, to: number): boolean {
         const angle = wrapAngle(this.startHeadings[to] - this.endHeadings[from])
         return angle >= 0 ? angle <= this.limits.left : -angle <= this.limits.right
+    }
+
+    /** Does this edge end at a node that one of the last few route edges started from? */
+    private leadsBack(route: number[], edge: number): boolean {
+        const target = this.graph.edges[edge].to
+        for (let k = Math.max(0, route.length - RECENT_EDGES); k < route.length; k++) {
+            if (this.graph.edges[route[k]].from === target) return true
+        }
+        return false
     }
 }
