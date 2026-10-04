@@ -52,13 +52,14 @@ function sendFrame(): void {
     if (!simulation) return
     const positions = new Float32Array(simulation.vehicleCount * 2)
     const speeds = new Float32Array(simulation.vehicleCount)
-    simulation.writePositions(positions)
+    const lanes = new Uint8Array(simulation.vehicleCount)
+    simulation.writePositions(positions, true)
     simulation.writeSpeedRatios(speeds)
+    simulation.writeLanes(lanes)
     awaitingAck = true
-    // Listing the buffers as "transferred" hands them over without copying
     scope.postMessage(
-        { type: 'frame', time: simulation.time, positions, speeds },
-        [positions.buffer, speeds.buffer]
+        { type: 'frame', time: simulation.time, positions, speeds, lanes },
+        [positions.buffer, speeds.buffer, lanes.buffer]
     )
 }
 

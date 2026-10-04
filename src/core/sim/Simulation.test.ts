@@ -10,6 +10,7 @@ import { TrafficSignals } from './signals/TrafficSignals'
 import { PriorityJunctions } from './junctions/PriorityJunctions'
 import {NO_JUNCTION_RULES, NO_SIGNALS, NO_TURN_RULES, SignalControl} from './ports'
 import {Turns} from "@core/sim/junctions/Turns";
+import {laneCentre} from "@core/graph/laneGeometry";
 
 // Three points 100 m apart; every edge has a 10 m/s speed limit
 const line = twoWayLine([[0, 0], [100, 0], [200, 0]])
@@ -390,5 +391,32 @@ describe('gridlock', () => {
 
         for (let i = 0; i < 1100; i++) simulation.step(0.1) // 260 s in total
         expect(simulation.teleports).toBe(1)
+    })
+})
+
+describe('lane offset', () => {
+    // One road heading east (+x), two lanes
+    const wide = makeGraph([[0, 0], [100, 0]], [{ from: 0, to: 1, lanes: 2 }])
+
+    function scenario(): Simulation {
+        const simulation = build(wide)
+        simulation.addVehicle(0, 50, 0, 0)
+        simulation.addVehicle(0, 20, 0, 1)
+        return simulation
+    }
+
+    it('shifts vehicles to the right of their direction, by lane', () => {
+        const out = new Float32Array(4)
+        scenario().writePositions(out, true)
+        expect(out[0]).toBeCloseTo(50)
+        expect(out[1]).toBeCloseTo(-laneCentre(0)) // heading east, right is south (y down)
+        expect(out[3]).toBeCloseTo(-laneCentre(1))
+    })
+
+    it('does not shift unless asked', () => {
+        const out = new Float32Array(4)
+        scenario().writePositions(out)
+        expect(out[1]).toBeCloseTo(0)
+        expect(out[3]).toBeCloseTo(0)
     })
 })

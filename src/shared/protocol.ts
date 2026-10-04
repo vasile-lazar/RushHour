@@ -12,5 +12,5 @@ export type ToWorker =
 
 /** Messages the worker sends back. */
 export type FromWorker =
-    | { type: 'frame'; time: number; positions: Float32Array; speeds: Float32Array }
+    | { type: 'frame'; time: number; positions: Float32Array; speeds: Float32Array; lanes: Uint8Array }
     | { type: 'error'; message: string }
