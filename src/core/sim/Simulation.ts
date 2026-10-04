@@ -11,6 +11,7 @@ import {
     type SignalControl,
     type TurnRules, PathRules, NO_PATH_RULES, LaneGuide, NO_LANE_GUIDE
 } from './ports'
+import {laneCentre} from "@core/graph/laneGeometry";
 
 /** Vehicle length in meters, used to measure the gap between bumpers */
 export const VEHICLE_LENGTH_M = 4.5
@@ -108,6 +109,7 @@ export class Simulation {
     private readonly paths: PathRules
     private readonly guide: LaneGuide
     private readonly changesLanes: boolean
+    private readonly probe = new Float32Array(4)
 
     constructor(
         graph: RoadGraph,
@@ -323,13 +325,30 @@ export class Simulation {
         this.elapsed += dt
     }
 
-    /** Writes every vehicle's (x, y) into `out` as x0, y0, x1, y1, ... (needs 2 * vehicleCount slots). */
-    writePositions(out: Float32Array): void {
+    /**
+     * Writes every vehicle's (x, y) into `out` as x0, y0, x1, y1, ... (needs 2 * vehicleCount slots).
+     * With `shiftToLane`, each vehicle is moved sideways into its lane (to the right of its direction).
+     */
+    writePositions(out: Float32Array, shiftToLane = false): void {
         const edges = this.graph.edges
+        const probe = this.probe
         for (let i = 0; i < this.vehicles.length; i++) {
             const vehicle = this.vehicles[i]
             const edge = edges[vehicle.route[vehicle.routeIndex]]
             pointAlong(edge.geometry, vehicle.offset, out, i * 2)
+            if (!shiftToLane) continue
+
+            // Heading: the direction of the road over the next meter
+            const start = Math.max(0, Math.min(vehicle.offset, edge.length - 1))
+            pointAlong(edge.geometry, start, probe, 0)
+            pointAlong(edge.geometry, start + 1, probe, 2)
+            const dx = probe[2] - probe[0]
+            const dy = probe[3] - probe[1]
+            const norm = Math.hypot(dx, dy)
+            if (norm < 1e-6) continue
+            const shift = laneCentre(vehicle.lane) / norm
+            out[i * 2] += dy * shift // right of travel in a y-up world is (dy, -dx)
+            out[i * 2 + 1] -= dx * shift
         }
     }
 

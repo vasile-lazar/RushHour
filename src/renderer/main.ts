@@ -23,8 +23,8 @@ let playing = false
 let measureWall = 0
 let measureSimTime = 0
 
-sim.onFrame = (positions, speeds, time) => {
-    map.setVehicles(positions, speeds)
+sim.onFrame = (positions, speeds, lanes, time) => {
+    map.setVehicles(positions, speeds, lanes)
 
     // Once a second, show how fast the simulation really runs compared to real time
     const now = performance.now()

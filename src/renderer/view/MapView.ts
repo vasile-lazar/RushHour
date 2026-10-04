@@ -1,10 +1,14 @@
 ﻿import type { RoadGraph } from '@core/graph/types'
 import { Viewport } from './Viewport'
+import { LANE_WIDTH_M } from '@core/graph/laneGeometry'
 
 /** Base road width in meters when zoomed in, clamped in pixels when zoomed out. */
 const ROAD_WIDTH_M = 7
 const MIN_ROAD_PX = 0.8
 const MAX_ROAD_PX = 6
+
+/** From this zoom on (pixels per meter) roads are drawn as real lanes. */
+const LANE_VIEW_MIN_SCALE = 0.6
 
 /** Speed relative to the limit, from flowing to stopped. Drawn in this order, so the red ones end up on top. */
 const VEHICLE_COLORS = ['#06d6a0', '#ffd166', '#ef476f']
@@ -86,14 +90,18 @@ export class MapView {
     private settleTimer: ReturnType<typeof setTimeout> | null = null
 
     private roads: Path2D[] | null = null
+    private graph: RoadGraph | null = null
     /** Latest vehicle positions from the simulation: x0, y0, x1, y1, ... in world meters */
     private vehicles: Float32Array = new Float32Array(0)
     /** Each vehicle's speed relative to its road's limit (0 to 1), same order as `vehicles` */
     private speeds: Float32Array = new Float32Array(0)
+    /** Each vehicle's lane on its road (0 = leftmost), same order as `vehicles` */
+    private lanes: Uint8Array = new Uint8Array(0)
     private fitBounds: RoadGraph['bounds'] | null = null
     private drawQueued = false
     private lastPointer: { x: number; y: number } | null = null
 
+    
     constructor(canvas: HTMLCanvasElement) {
         const ctx = canvas.getContext('2d')
         const roadCtx = this.roadLayer.getContext('2d')
@@ -115,17 +123,20 @@ export class MapView {
 
     setGraph(graph: RoadGraph): void {
         this.roads = buildRoadPaths(graph)
+        this.graph = graph
         this.vehicles = new Float32Array(0)
         this.speeds = new Float32Array(0)
+        this.lanes = new Uint8Array(0)
         this.fitBounds = graph.bounds
         this.viewport.fit(graph.bounds)
         this.renderRoadLayer()
         this.requestDraw()
     }
 
-    setVehicles(positions: Float32Array, speeds: Float32Array): void {
+    setVehicles(positions: Float32Array, speeds: Float32Array, lanes: Uint8Array): void {
         this.vehicles = positions
         this.speeds = speeds
+        this.lanes = lanes
         this.requestDraw()
     }
     // --- drawing ---------------------------------------------------------
@@ -146,19 +157,23 @@ export class MapView {
             dpr * viewport.offsetX, dpr * viewport.offsetY
         )
 
-        const baseWidthPx = Math.min(MAX_ROAD_PX, Math.max(MIN_ROAD_PX, viewport.scale * ROAD_WIDTH_M))
-        // Round joins and caps are expensive and invisible on hairline roads
-        const smooth = baseWidthPx > 2
-        ctx.lineJoin = smooth ? 'round' : 'miter'
-        ctx.lineCap = smooth ? 'round' : 'butt'
+        if (this.graph && viewport.scale >= LANE_VIEW_MIN_SCALE) {
+            this.drawLaneRoads(this.graph)
+        } else {
+            const baseWidthPx = Math.min(MAX_ROAD_PX, Math.max(MIN_ROAD_PX, viewport.scale * ROAD_WIDTH_M))
+            // Round joins and caps are expensive and invisible on hairline roads
+            const smooth = baseWidthPx > 2
+            ctx.lineJoin = smooth ? 'round' : 'miter'
+            ctx.lineCap = smooth ? 'round' : 'butt'
 
-        // Least important first, so major roads end up on top
-        for (let i = TIERS.length - 1; i >= 0; i--) {
-            const tier = TIERS[i]
-            if (viewport.scale < tier.minScale) continue
-            ctx.strokeStyle = tier.color
-            ctx.lineWidth = (baseWidthPx * tier.widthFactor) / viewport.scale
-            ctx.stroke(this.roads[i])
+            // Least important first, so major roads end up on top
+            for (let i = TIERS.length - 1; i >= 0; i--) {
+                const tier = TIERS[i]
+                if (viewport.scale < tier.minScale) continue
+                ctx.strokeStyle = tier.color
+                ctx.lineWidth = (baseWidthPx * tier.widthFactor) / viewport.scale
+                ctx.stroke(this.roads[i])
+            }
         }
 
         this.roadLayerView = {
@@ -168,6 +183,53 @@ export class MapView {
         }
     }
 
+    /** Zoomed-in roads: a carriageway per edge, lane dividers, and a line along the centre. */
+    private drawLaneRoads(graph: RoadGraph): void {
+        const { roadCtx: ctx, viewport } = this
+        const margin = 30
+        const minX = -viewport.offsetX / viewport.scale - margin
+        const maxX = (viewport.width - viewport.offsetX) / viewport.scale + margin
+        const maxY = viewport.offsetY / viewport.scale + margin
+        const minY = (viewport.offsetY - viewport.height) / viewport.scale - margin
+
+        // One path per tier and lane count (key = tier * 100 + lanes), so each is stroked once
+        const carriageways = new Map<number, Path2D>()
+        const centre = new Path2D()
+        const dividers = new Path2D()
+        for (const edge of graph.edges) {
+            const g = edge.geometry
+            if (!touchesBox(g, minX, minY, maxX, maxY)) continue
+            const lanes = Math.max(1, edge.lanes)
+            const key = tierIndexOf(edge.roadClass) * 100 + lanes
+            let path = carriageways.get(key)
+            if (!path) {
+                path = new Path2D()
+                carriageways.set(key, path)
+            }
+            addOffsetLine(path, g, (lanes * LANE_WIDTH_M) / 2)
+            addOffsetLine(centre, g, 0)
+            for (let i = 1; i < lanes; i++) addOffsetLine(dividers, g, i * LANE_WIDTH_M)
+        }
+
+        ctx.lineJoin = 'round'
+        ctx.lineCap = 'round'
+        // Least important tiers first (highest key), so major roads end up on top
+        for (const key of [...carriageways.keys()].sort((a, b) => b - a)) {
+            ctx.strokeStyle = TIERS[Math.floor(key / 100)].color
+            ctx.lineWidth = (key % 100) * LANE_WIDTH_M
+            ctx.stroke(carriageways.get(key) as Path2D)
+        }
+
+        ctx.lineCap = 'butt'
+        ctx.lineWidth = Math.max(0.12, 1 / viewport.scale) // at least one pixel
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)'
+        ctx.stroke(centre)
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)'
+        ctx.setLineDash([2, 4])
+        ctx.stroke(dividers)
+        ctx.setLineDash([])
+    }
+    
     /** The fast part, run every frame: copy the finished road layer onto the screen. */
     private draw(): void {
         const { ctx, canvas, roadLayer, viewport } = this
@@ -302,4 +364,49 @@ function buildRoadPaths(graph: RoadGraph): Path2D[] {
         }
     }
     return paths
+}
+
+function touchesBox(g: ArrayLike<number>, minX: number, minY: number, maxX: number, maxY: number): boolean {
+    let loX = Infinity
+    let hiX = -Infinity
+    let loY = Infinity
+    let hiY = -Infinity
+    for (let i = 0; i < g.length; i += 2) {
+        loX = Math.min(loX, g[i])
+        hiX = Math.max(hiX, g[i])
+        loY = Math.min(loY, g[i + 1])
+        hiY = Math.max(hiY, g[i + 1])
+    }
+    return hiX >= minX && loX <= maxX && hiY >= minY && loY <= maxY
+}
+
+/** Adds the polyline shifted `distance` meters to the right of its direction of travel. */
+function addOffsetLine(path: Path2D, g: ArrayLike<number>, distance: number): void {
+    const n = g.length / 2
+    for (let i = 0; i < n; i++) {
+        // Right-hand normals of the segments before and after this vertex, summed
+        let nx = 0
+        let ny = 0
+        if (i > 0) {
+            const dx = g[2 * i] - g[2 * i - 2]
+            const dy = g[2 * i + 1] - g[2 * i - 1]
+            const len = Math.hypot(dx, dy) || 1
+            nx += dy / len
+            ny -= dx / len
+        }
+        if (i < n - 1) {
+            const dx = g[2 * i + 2] - g[2 * i]
+            const dy = g[2 * i + 3] - g[2 * i + 1]
+            const len = Math.hypot(dx, dy) || 1
+            nx += dy / len
+            ny -= dx / len
+        }
+        // At a bend the sum is shorter than 2: stretch it so the line keeps its distance (capped)
+        const len = Math.hypot(nx, ny) || 1
+        const f = i > 0 && i < n - 1 ? (distance * Math.min(2, 2 / len)) / len : distance
+        const x = g[2 * i] + nx * f
+        const y = g[2 * i + 1] + ny * f
+        if (i === 0) path.moveTo(x, y)
+        else path.lineTo(x, y)
+    }
 }
