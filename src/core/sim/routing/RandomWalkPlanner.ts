@@ -67,7 +67,7 @@ export class RandomWalkPlanner implements RoutePlanner {
         return this.startEdges[low]
     }
 
-    plan(startEdge: number, rng: Rng): number[] {
+    plan(startEdge: number, rng: Rng, avoid?: number): number[] {
         const route = [startEdge]
         let current = startEdge
 
@@ -84,8 +84,17 @@ export class RandomWalkPlanner implements RoutePlanner {
             const allowed = gentle.length > 0 ? gentle : reachable
             // Do not drive round a short loop: skip roads that lead back to somewhere just passed
             const fresh = allowed.filter((index) => !this.leadsBack(route, index))
-            const pool = fresh.length > 0 ? fresh : allowed
             
+            let pool = fresh.length > 0 ? fresh : allowed
+            if (avoid !== undefined && route.length === 1) {
+                for (const group of [pool, allowed, reachable]) {
+                    const others = group.filter((index) => index !== avoid)
+                    if (others.length > 0) {
+                        pool = others
+                        break
+                    }
+                }
+            }
             current = pool[Math.floor(rng() * pool.length)]
             route.push(current)
         }

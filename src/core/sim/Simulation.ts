@@ -57,6 +57,11 @@ const LANE_TIME_GAP_S = 0.6
 const LANE_BLOCKED_RATIO = 0.75
 /** Another lane must have this much more room ahead to be worth changing for (m) */
 const LANE_GAIN_M = 15
+/** A queue head blocked by a vehicle ahead for this long takes another turn (s) */
+const REROUTE_AFTER_S = 20
+/** After rerouting, a driver waits this long before doing it again (s) */
+const REROUTE_COOLDOWN_S = 20
+
 
 interface Vehicle {
     /** Edge indices to drive along, in order */
@@ -71,12 +76,14 @@ interface Vehicle {
     acceleration: number
     /** Fastest speed allowed right now, given lower speed limits coming up */
     speedCap: number
-    /** Seconds spent (nearly) standing still; decides who goes first when equal roads meet */
+    /** Seconds spent standing in a queue; creeping forward keeps it, driving off resets it */
     waited: number
     /** Which lane of the current edge, counted from the leftmost (0) */
     lane: number
     /** Seconds until the next lane change is allowed */
     laneCooldown: number
+    /** Seconds until this driver may reroute again */
+    rerouteCooldown: number
 }
 
 /** Result of a leader search, reused to avoid creating an object per vehicle per step */
@@ -110,7 +117,9 @@ export class Simulation {
     private readonly guide: LaneGuide
     private readonly changesLanes: boolean
     private readonly probe = new Float32Array(4)
-
+    /** Set by findLeaderOnRoute: the route index whose next edge holds the blocking vehicle, or -1 */
+    private blockedAt = -1
+    
     constructor(
         graph: RoadGraph,
         planner: RoutePlanner,
@@ -233,7 +242,8 @@ export class Simulation {
             let verdict = ''
             for (;;) {
                 if (chain.includes(v)) {
-                    verdict = 'CYCLE'
+                    const loop = chain.slice(chain.indexOf(v))
+                    verdict = loop.every((x) => x.speed < 1.5) ? 'CYCLE' : 'moving loop'
                     break
                 }
                 chain.push(v)
@@ -250,7 +260,7 @@ export class Simulation {
                 v = ahead
             }
             const head = chain[chain.length - 1]
-            if (verdict !== 'CYCLE' && head.speed > 1.5) {
+            if (verdict === 'moving loop' || (verdict !== 'CYCLE' && head.speed > 1.5)) {
                 flowing++ // a slow queue behind a head that is moving: not a jam
                 continue
             }
@@ -292,6 +302,7 @@ export class Simulation {
                 waited: 0,
                 lane: 0,
                 laneCooldown: 0,
+                rerouteCooldown: 0,
             }
             this.placeRandomly(vehicle)
             this.vehicles.push(vehicle)
@@ -311,6 +322,7 @@ export class Simulation {
             speedCap: edge.speedLimit,
             waited: 0,
             laneCooldown: 0,
+            rerouteCooldown: 0,
         })
     }
 
@@ -404,6 +416,14 @@ export class Simulation {
                     hasLeader = true
                 } else {
                     hasLeader = this.findLeaderOnRoute(vehicle) // front of its edge: look further along the route
+                    if (
+                        hasLeader &&
+                        this.blockedAt >= 0 &&
+                        vehicle.waited >= REROUTE_AFTER_S &&
+                        vehicle.rerouteCooldown <= 0
+                    ) {
+                        this.reroute(vehicle, this.blockedAt)
+                    }
                 }
 
                 const wanted = this.model.acceleration(
@@ -424,6 +444,7 @@ export class Simulation {
      * Anything that blocks counts as a stopped vehicle sitting at the stop line.
      */
     private findLeaderOnRoute(vehicle: Vehicle): boolean {
+        this.blockedAt = -1
         const edges = this.graph.edges
         // Distance from the front bumper to the end of edge `r`
         let distance = edges[vehicle.route[vehicle.routeIndex]].length - vehicle.offset
@@ -450,6 +471,7 @@ export class Simulation {
                 if (rearmost !== vehicle) {
                     this.leader.gap = distance + rearmost.offset - VEHICLE_LENGTH_M
                     this.leader.speed = rearmost.speed
+                    this.blockedAt = r
                     return true
                 }
             }
@@ -658,12 +680,26 @@ export class Simulation {
         vehicle.routeIndex = 0
     }
 
+    /** Replans the turn at the end of route[r], avoiding the road that is jammed. */
+    private reroute(vehicle: Vehicle, r: number): void {
+        if (r + 1 >= vehicle.route.length) return
+        const avoid = vehicle.route[r + 1]
+        const tail = this.planner.plan(vehicle.route[r], this.rng, avoid)
+        vehicle.route = vehicle.route.slice(vehicle.routeIndex, r).concat(tail)
+        vehicle.routeIndex = 0
+        vehicle.rerouteCooldown = REROUTE_COOLDOWN_S
+    }
+    
     /** Phase 2: apply the decided acceleration and move the vehicle. */
     private move(vehicle: Vehicle, dt: number): void {
+        vehicle.rerouteCooldown -= dt
         const edges = this.graph.edges
         const accelerated = Math.max(0, vehicle.speed + vehicle.acceleration * dt)
         vehicle.speed = Math.min(accelerated, vehicle.speedCap)
-        vehicle.waited = vehicle.speed < STANDING_MS ? vehicle.waited + dt : 0
+        // Patience builds while standing and survives creeping forward in a queue;
+        // it only resets once the vehicle really gets going again
+        if (vehicle.speed < STANDING_MS) vehicle.waited += dt
+        else if (vehicle.speed >= CREEP_MS) vehicle.waited = 0
         if (vehicle.waited > TELEPORT_AFTER_S) {
             this.teleported++
             this.lastTeleportEdge = vehicle.route[vehicle.routeIndex]
@@ -818,5 +854,6 @@ export class Simulation {
         vehicle.acceleration = 0
         vehicle.speedCap = edge.speedLimit
         vehicle.laneCooldown = 0
+        vehicle.rerouteCooldown = 0
     }
 }

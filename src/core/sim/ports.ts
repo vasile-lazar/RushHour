@@ -12,8 +12,8 @@ export type EdgeFilter = (edge: GraphEdge) => boolean
 export interface RoutePlanner {
     /** A random edge where a vehicle can appear. */
     randomStart(rng: Rng): number
-    /** A route (edge indices) beginning with `startEdge`. Length 1 means a dead end. */
-    plan(startEdge: number, rng: Rng): number[]
+    /** A route (edge indices) beginning with `startEdge`. Length 1 means a dead end. With `avoid`, the first turn takes another road if there is one. */
+    plan(startEdge: number, rng: Rng, avoid?: number): number[]
 }
 
 /** How a driver reacts to the road and to the vehicle in front. */
