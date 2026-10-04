@@ -8,9 +8,12 @@ import { RandomWalkPlanner } from './routing/RandomWalkPlanner'
 import { Simulation, VEHICLE_LENGTH_M } from './Simulation'
 import { TrafficSignals } from './signals/TrafficSignals'
 import { PriorityJunctions } from './junctions/PriorityJunctions'
-import {NO_JUNCTION_RULES, NO_SIGNALS, NO_TURN_RULES, SignalControl} from './ports'
+import {NO_JUNCTION_RULES, NO_SIGNALS, NO_TURN_RULES, RoutePlanner, SignalControl} from './ports'
 import {Turns} from "@core/sim/junctions/Turns";
 import {laneCentre} from "@core/graph/laneGeometry";
+import {Movements} from "@core/sim/junctions/Movements";
+import {TurnLaneGuide} from "@core/sim/lanes/TurnLaneGuide";
+import {createRng} from "@core/util/random";
 
 // Three points 100 m apart; every edge has a 10 m/s speed limit
 const line = twoWayLine([[0, 0], [100, 0], [200, 0]])
@@ -418,5 +421,75 @@ describe('lane offset', () => {
         scenario().writePositions(out)
         expect(out[1]).toBeCloseTo(0)
         expect(out[3]).toBeCloseTo(0)
+    })
+})
+
+describe('left-turn ring', () => {
+    // Left road LN-JL-LS and right road RN-JR-RS, joined by a short connector JL-JR (40 m)
+    const ring = makeGraph(
+        [[-20, 100], [-20, 0], [-20, -100], [20, 100], [20, 0], [20, -100]],
+        [
+            { from: 0, to: 1 }, // 0: left road, southbound, into JL
+            { from: 1, to: 2 }, // 1: left road, southbound, out of JL
+            { from: 2, to: 1 }, // 2: left road, northbound, into JL
+            { from: 1, to: 0 }, // 3: left road, northbound, out of JL
+            { from: 3, to: 4 }, // 4: right road, southbound, into JR
+            { from: 4, to: 5 }, // 5: right road, southbound, out of JR
+            { from: 5, to: 4 }, // 6: right road, northbound, into JR
+            { from: 4, to: 3 }, // 7: right road, northbound, out of JR
+            { from: 1, to: 4 }, // 8: connector, eastbound
+            { from: 4, to: 1 } // 9: connector, westbound
+        ]
+    )
+
+    // Everyone turns left, twice
+    const routes = new Map<number, number[]>([
+        [0, [0, 8, 7]],
+        [8, [8, 7]],
+        [6, [6, 9, 1]],
+        [9, [9, 1]]
+    ])
+    // The other way at each stop line: straight on, or the right turn
+    const alternatives = new Map<number, number[]>([
+        [0, [0, 1]],
+        [8, [8, 5]],
+        [6, [6, 7]],
+        [9, [9, 3]]
+    ])
+    const planner: RoutePlanner = {
+        randomStart: () => 3,
+        plan: (start, _rng, avoid) =>
+            (avoid !== undefined ? alternatives.get(start) : routes.get(start)) ?? [start]
+    }
+
+    function build(): Simulation {
+        const rng = createRng(1)
+        const junctions = new PriorityJunctions(ring, isDrivable, NO_SIGNALS, rng)
+        const simulation = new Simulation(
+            ring,
+            planner,
+            rng,
+            new IdmModel(),
+            NO_SIGNALS,
+            junctions,
+            new Turns(ring),
+            new Movements(ring),
+            new TurnLaneGuide(ring, isDrivable, junctions)
+        )
+        // Both connector lanes full of standing vehicles, plus one feeder at each stop line
+        for (const edge of [8, 9]) {
+            for (let offset = 38; offset > 0; offset -= 6) simulation.addVehicle(edge, offset, 0)
+        }
+        simulation.addVehicle(0, 98, 0)
+        simulation.addVehicle(6, 98, 0)
+        return simulation
+    }
+
+    it('does not lock up when everyone turns left', () => {
+        const simulation = build()
+        for (let i = 0; i < 1500; i++) simulation.step(0.1) // 150 s, before the 180 s teleport
+        console.log(simulation.traceLeaders(60).join('\n')) // temporary: remove once it passes
+        expect(simulation.countStanding(100)).toBe(0)
+        expect(simulation.teleports).toBe(0)
     })
 })
