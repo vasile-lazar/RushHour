@@ -516,7 +516,6 @@ describe('left-turn ring', () => {
     it('does not lock up when everyone turns left', () => {
         const simulation = build()
         for (let i = 0; i < 1500; i++) simulation.step(0.1) // 150 s, before the 180 s teleport
-        console.log(simulation.traceLeaders(60).join('\n')) // temporary: remove once it passes
         expect(simulation.countStanding(100)).toBe(0)
         expect(simulation.teleports).toBe(0)
     })
