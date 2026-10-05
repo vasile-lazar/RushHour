@@ -1,6 +1,6 @@
 ﻿import type { RoadGraph } from '@core/graph/types'
 import { Viewport } from './Viewport'
-import { LANE_WIDTH_M } from '@core/graph/laneGeometry'
+import {LANE_WIDTH_M, STOP_LINE_M} from '@core/graph/laneGeometry'
 
 /** Base road width in meters when zoomed in, clamped in pixels when zoomed out. */
 const ROAD_WIDTH_M = 7
@@ -23,6 +23,7 @@ const VEHICLE_MAX_PX = 8
 /** How long the view must stay still before the roads are redrawn in full detail. */
 const SETTLE_MS = 120
 
+const SIGNAL_COLORS = ['#3ddc84', '#ffe14d', '#ff3b5c'] // green, yellow, red
 function speedBucket(ratio: number): number {
     if (ratio >= FLOWING_RATIO) return 0
     if (ratio >= SLOW_RATIO) return 1
@@ -97,6 +98,11 @@ export class MapView {
     private speeds: Float32Array = new Float32Array(0)
     /** Each vehicle's lane on its road (0 = leftmost), same order as `vehicles` */
     private lanes: Uint8Array = new Uint8Array(0)
+    /** Edges whose end has a signal, and each one's state (0 green, 1 yellow, 2 red) */
+    private signalApproaches: Int32Array = new Int32Array(0)
+    private signalStates: Uint8Array = new Uint8Array(0)
+    /** Per signal approach: stop line x, y, then the unit vector to the right of travel, then the lanes' total width (m) */
+    private signalGeom: Float32Array = new Float32Array(0)
     private fitBounds: RoadGraph['bounds'] | null = null
     private drawQueued = false
     private lastPointer: { x: number; y: number } | null = null
@@ -127,6 +133,9 @@ export class MapView {
         this.vehicles = new Float32Array(0)
         this.speeds = new Float32Array(0)
         this.lanes = new Uint8Array(0)
+        this.signalApproaches = new Int32Array(0)
+        this.signalStates = new Uint8Array(0)
+        this.signalGeom = new Float32Array(0)
         this.fitBounds = graph.bounds
         this.viewport.fit(graph.bounds)
         this.renderRoadLayer()
@@ -139,6 +148,47 @@ export class MapView {
         this.lanes = lanes
         this.requestDraw()
     }
+
+    setSignalApproaches(approaches: Int32Array): void {
+        this.signalApproaches = approaches
+        const graph = this.graph
+        if (!graph) return
+        const geom = new Float32Array(approaches.length * 5)
+        approaches.forEach((edgeIndex, i) => {
+            const edge = graph.edges[edgeIndex]
+            const g = edge.geometry
+            const n = g.length
+            const dx = g[n - 2] - g[n - 4]
+            const dy = g[n - 1] - g[n - 3]
+            const len = Math.hypot(dx, dy) || 1
+            const ux = dx / len
+            const uy = dy / len
+            geom[i * 5] = g[n - 2] - ux * STOP_LINE_M
+            geom[i * 5 + 1] = g[n - 1] - uy * STOP_LINE_M
+            geom[i * 5 + 2] = uy // right of travel in a y-up world is (dy, -dx)
+            geom[i * 5 + 3] = -ux
+            geom[i * 5 + 4] = Math.max(1, edge.lanes) * LANE_WIDTH_M
+        })
+        this.signalGeom = geom
+    }
+
+    setSignalStates(states: Uint8Array): void {
+        this.signalStates = states
+        this.requestDraw()
+    }
+
+    /** Centres the view on a world point, zooming in if the view is further out than `minScale`. */
+    focusOn(x: number, y: number, minScale = 1): void {
+        const { viewport } = this
+        if (viewport.scale < minScale) {
+            viewport.zoomAt(viewport.width / 2, viewport.height / 2, minScale / viewport.scale)
+        }
+        const sx = x * viewport.scale + viewport.offsetX
+        const sy = -y * viewport.scale + viewport.offsetY
+        viewport.panBy(viewport.width / 2 - sx, viewport.height / 2 - sy)
+        this.viewChanged()
+    }
+    
     // --- drawing ---------------------------------------------------------
 
     /** The slow part: strokes every road into the off-screen layer. */
@@ -250,9 +300,45 @@ export class MapView {
             ctx.drawImage(roadLayer, 0, 0)
         }
 
+        this.drawSignals()
         this.drawVehicles()
     }
 
+    /** Signal bars across the approach lanes, drawn under the vehicles. Only in lane view (zoomed in). */
+    private drawSignals(): void {
+        const { ctx, viewport, signalGeom: geom, signalStates: states } = this
+        const count = Math.min(states.length, geom.length / 5)
+        if (count === 0 || viewport.scale < LANE_VIEW_MIN_SCALE) return
+
+        const dpr = window.devicePixelRatio || 1
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0) // work in CSS pixels
+        const scale = viewport.scale
+        const thickness = Math.max(2.5, 1.2 * scale)
+        ctx.lineCap = 'butt'
+
+        // Pass 0 is the dark outline, passes 1 to 3 are green, yellow, red
+        for (let pass = 0; pass <= 3; pass++) {
+            if (pass === 0) {
+                ctx.strokeStyle = 'rgba(0, 0, 0, 0.65)'
+                ctx.lineWidth = thickness + 2
+            } else {
+                ctx.strokeStyle = SIGNAL_COLORS[pass - 1]
+                ctx.lineWidth = thickness
+            }
+            ctx.beginPath()
+            for (let i = 0; i < count; i++) {
+                if (pass > 0 && states[i] !== pass - 1) continue
+                const x = geom[i * 5] * scale + viewport.offsetX
+                const y = -geom[i * 5 + 1] * scale + viewport.offsetY
+                if (x < -50 || y < -50 || x > viewport.width + 50 || y > viewport.height + 50) continue
+                const width = geom[i * 5 + 4] * scale
+                ctx.moveTo(x, y)
+                ctx.lineTo(x + geom[i * 5 + 2] * width, y - geom[i * 5 + 3] * width)
+            }
+            ctx.stroke()
+        }
+    }
+    
     /** Vehicles change every frame, so they are drawn fresh, always at the exact current view. */
     private drawVehicles(): void {
         const { ctx, viewport, vehicles, speeds } = this

@@ -103,3 +103,39 @@ export const NO_LANE_GUIDE: LaneGuide = {
     lanesFor: () => undefined,
     laneAfter: (_from, _to, fromLane) => fromLane
 }
+
+/** One row of the junction report. */
+export interface JunctionReport {
+    /** The junction's cluster id: the lowest node number of the junction */
+    id: number
+    x: number
+    y: number
+    /** Vehicles that drove through */
+    passed: number
+    /** Total vehicle-seconds spent standing or crawling just before the junction */
+    delay: number
+    /** The most vehicles delayed at the junction at the same moment */
+    maxQueue: number
+    /** Average delay per vehicle that has passed (s); until the first one passes, the total delay */
+    average: number
+}
+
+/** Collects statistics per junction while the simulation runs. */
+export interface JunctionStatsSink {
+    /** A vehicle drove through the junction at node `node`. */
+    passed(node: number): void
+    /** A vehicle spent `dt` seconds standing or crawling just before the junction at node `node`. */
+    delayed(node: number, dt: number): void
+    /** Called once at the end of every simulation step. */
+    endStep(): void
+    /** The `count` junctions with the most total delay, worst first. With `includeQuiet`, junctions with traffic but no delay are listed too. */
+    top(count: number, includeQuiet?: boolean): JunctionReport[]
+}
+
+/** No statistics. */
+export const NO_STATS: JunctionStatsSink = {
+    passed: () => {},
+    delayed: () => {},
+    endStep: () => {},
+    top: () => []
+}

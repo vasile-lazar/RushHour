@@ -1,5 +1,10 @@
 ﻿/** Width of one lane in meters, shared by the simulation output and the renderer. */
 export const LANE_WIDTH_M = 3.2
+/**
+ * Vehicles stop this far before the junction node, where the crossing road begins.
+ * Keep it below NEAR_JUNCTION_M in Simulation.ts, or waiting vehicles stop counting as "at the junction".
+ */
+export const STOP_LINE_M = 7
 
 /**
  * How far to the right of the edge's centre line (in the direction of travel) the middle

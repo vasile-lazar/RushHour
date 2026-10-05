@@ -9,9 +9,9 @@ import {
     type Rng,
     type RoutePlanner,
     type SignalControl,
-    type TurnRules, PathRules, NO_PATH_RULES, LaneGuide, NO_LANE_GUIDE
+    type TurnRules, PathRules, NO_PATH_RULES, LaneGuide, NO_LANE_GUIDE, JunctionStatsSink, NO_STATS, JunctionReport
 } from './ports'
-import {laneCentre} from "@core/graph/laneGeometry";
+import {laneCentre, STOP_LINE_M} from "@core/graph/laneGeometry";
 
 /** Vehicle length in meters, used to measure the gap between bumpers */
 export const VEHICLE_LENGTH_M = 4.5
@@ -61,7 +61,8 @@ const LANE_GAIN_M = 15
 const REROUTE_AFTER_S = 20
 /** After rerouting, a driver waits this long before doing it again (s) */
 const REROUTE_COOLDOWN_S = 20
-
+/** A vehicle slower than CREEP_MS this close to a junction counts as delayed by it (m) */
+const DELAY_ZONE_M = 60
 
 interface Vehicle {
     /** Edge indices to drive along, in order */
@@ -84,6 +85,9 @@ interface Vehicle {
     laneCooldown: number
     /** Seconds until this driver may reroute again */
     rerouteCooldown: number
+    /** The edge (and lane) this vehicle just came from; used only to draw it STOP_LINE_M behind its real position */
+    prevEdge: number
+    prevLane: number
 }
 
 /** Result of a leader search, reused to avoid creating an object per vehicle per step */
@@ -119,6 +123,7 @@ export class Simulation {
     private readonly probe = new Float32Array(4)
     /** Set by findLeaderOnRoute: the route index whose next edge holds the blocking vehicle, or -1 */
     private blockedAt = -1
+    private readonly stats: JunctionStatsSink
     
     constructor(
         graph: RoadGraph,
@@ -129,7 +134,8 @@ export class Simulation {
         junctions: JunctionControl = NO_JUNCTION_RULES,
         turns: TurnRules = NO_TURN_RULES,
         paths: PathRules = NO_PATH_RULES,
-        guide: LaneGuide = NO_LANE_GUIDE
+        guide: LaneGuide = NO_LANE_GUIDE,
+        stats: JunctionStatsSink = NO_STATS,
     ) {
         this.graph = graph
         this.planner = planner
@@ -148,6 +154,7 @@ export class Simulation {
         this.paths = paths
         this.guide = guide
         this.changesLanes = guide !== NO_LANE_GUIDE
+        this.stats = stats
     }
 
     private laneCount(edge: number): number {
@@ -303,6 +310,8 @@ export class Simulation {
                 lane: 0,
                 laneCooldown: 0,
                 rerouteCooldown: 0,
+                prevEdge: -1,
+                prevLane: 0,
             }
             this.placeRandomly(vehicle)
             this.vehicles.push(vehicle)
@@ -323,6 +332,8 @@ export class Simulation {
             waited: 0,
             laneCooldown: 0,
             rerouteCooldown: 0,
+            prevEdge: -1,
+            prevLane: 0,
         })
     }
 
@@ -332,6 +343,7 @@ export class Simulation {
         this.changeLanes(dt)
         // Everyone decides based on the same snapshot...
         this.decide()
+        this.stats.endStep()
         // ...and only then does everyone move, so the update order cannot matter
         for (const vehicle of this.vehicles) this.move(vehicle, dt)
         this.elapsed += dt
@@ -339,31 +351,45 @@ export class Simulation {
 
     /**
      * Writes every vehicle's (x, y) into `out` as x0, y0, x1, y1, ... (needs 2 * vehicleCount slots).
-     * With `shiftToLane`, each vehicle is moved sideways into its lane (to the right of its direction).
+     * With `shiftToLane` (for drawing), each vehicle is drawn in its lane and STOP_LINE_M behind its
+     * real position, so vehicles waiting at a junction stand at the stop line.
      */
     writePositions(out: Float32Array, shiftToLane = false): void {
         const edges = this.graph.edges
         const probe = this.probe
         for (let i = 0; i < this.vehicles.length; i++) {
             const vehicle = this.vehicles[i]
-            const edge = edges[vehicle.route[vehicle.routeIndex]]
-            pointAlong(edge.geometry, vehicle.offset, out, i * 2)
-            if (!shiftToLane) continue
+            let edgeIndex = vehicle.route[vehicle.routeIndex]
+            if (!shiftToLane) {
+                pointAlong(edges[edgeIndex].geometry, vehicle.offset, out, i * 2)
+                continue
+            }
+
+            let offset = vehicle.offset - STOP_LINE_M
+            let lane = vehicle.lane
+            if (offset < 0 && vehicle.prevEdge >= 0) {
+                edgeIndex = vehicle.prevEdge // just left that road: still drawn on it
+                lane = Math.min(vehicle.prevLane, this.laneCount(edgeIndex) - 1)
+                offset += edges[edgeIndex].length
+            }
+            offset = Math.max(0, offset)
+            const edge = edges[edgeIndex]
+            pointAlong(edge.geometry, offset, out, i * 2)
 
             // Heading: the direction of the road over the next meter
-            const start = Math.max(0, Math.min(vehicle.offset, edge.length - 1))
+            const start = Math.max(0, Math.min(offset, edge.length - 1))
             pointAlong(edge.geometry, start, probe, 0)
             pointAlong(edge.geometry, start + 1, probe, 2)
             const dx = probe[2] - probe[0]
             const dy = probe[3] - probe[1]
             const norm = Math.hypot(dx, dy)
             if (norm < 1e-6) continue
-            const shift = laneCentre(vehicle.lane) / norm
+            const shift = laneCentre(lane) / norm
             out[i * 2] += dy * shift // right of travel in a y-up world is (dy, -dx)
             out[i * 2 + 1] -= dx * shift
         }
     }
-
+    
     /** Writes each vehicle's speed relative to its road's limit: 0 = stopped, 1 = at the limit. */
     writeSpeedRatios(out: Float32Array): void {
         const edges = this.graph.edges
@@ -706,13 +732,22 @@ export class Simulation {
             this.placeRandomly(vehicle) // gridlock: put the vehicle somewhere else
             return
         }
+        const here = edges[vehicle.route[vehicle.routeIndex]]
+        if (vehicle.speed < CREEP_MS && here.length - vehicle.offset < DELAY_ZONE_M) {
+            this.stats.delayed(here.to, dt)
+        }
+        
         vehicle.offset += vehicle.speed * dt
-
+        
         let edge = edges[vehicle.route[vehicle.routeIndex]]
         // Possibly cross several short edges in one step
         while (vehicle.offset >= edge.length) {
             vehicle.offset -= edge.length
             const left = vehicle.route[vehicle.routeIndex]
+            vehicle.prevEdge = left
+            vehicle.prevLane = vehicle.lane
+            // Links inside a split junction are not separate junctions: count it when leaving an approach only
+            if (!this.junctions.isInternal(left)) this.stats.passed(edges[left].to)
             vehicle.routeIndex++
             if (vehicle.routeIndex >= vehicle.route.length) {
                 this.placeRandomly(vehicle) // the road ended: reappear somewhere else
@@ -730,6 +765,25 @@ export class Simulation {
     /** Writes each vehicle's lane (0 = leftmost) into `out`. */
     writeLanes(out: Uint8Array): void {
         for (let i = 0; i < this.vehicles.length; i++) out[i] = this.vehicles[i].lane
+    }
+
+    /** The junctions with the most total delay so far, worst first. */
+    junctionReport(count = 10, includeQuiet = false): JunctionReport[] {
+        return this.stats.top(count, includeQuiet)
+    }
+    
+    /** Edges whose end is controlled by a traffic signal */
+    get signalApproaches(): readonly number[] {
+        return this.signals.approaches
+    }
+
+    /** Writes the state of every signal approach: 0 = green, 1 = yellow, 2 = red (same order as signalApproaches). */
+    writeSignalStates(out: Uint8Array): void {
+        const approaches = this.signals.approaches
+        for (let i = 0; i < approaches.length; i++) {
+            const state = this.signals.stateOf(approaches[i], this.elapsed)
+            out[i] = state === 'green' ? 0 : state === 'yellow' ? 1 : 2
+        }
     }
 
     /** Lets vehicles move to the lane beside them, one at a time, so two cannot take the same gap. */
@@ -855,5 +909,7 @@ export class Simulation {
         vehicle.speedCap = edge.speedLimit
         vehicle.laneCooldown = 0
         vehicle.rerouteCooldown = 0
+        vehicle.prevEdge = -1
+        vehicle.prevLane = 0
     }
 }
