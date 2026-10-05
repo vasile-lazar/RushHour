@@ -7,16 +7,19 @@ export class SimClient {
     })
 
     onFrame:
-        | ((positions: Float32Array, speeds: Float32Array, lanes: Uint8Array, time: number) => void)
+        | ((positions: Float32Array, speeds: Float32Array, lanes: Uint8Array, signals: Uint8Array, time: number) => void)
         | null = null
+    onSignalSetup: ((approaches: Int32Array) => void) | null = null
     onError: ((message: string) => void) | null = null
-
+    
     constructor() {
         this.worker.onmessage = (event: MessageEvent<FromWorker>) => {
             const message = event.data
             if (message.type === 'frame') {
-                this.onFrame?.(message.positions, message.speeds, message.lanes, message.time)
+                this.onFrame?.(message.positions, message.speeds, message.lanes, message.signals, message.time)
                 this.send({ type: 'ack' })
+            } else if (message.type === 'signalSetup') {
+                this.onSignalSetup?.(message.approaches)
             } else {
                 this.onError?.(message.message)
             }

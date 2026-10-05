@@ -10,7 +10,7 @@ import { TrafficSignals } from './signals/TrafficSignals'
 import { PriorityJunctions } from './junctions/PriorityJunctions'
 import {NO_JUNCTION_RULES, NO_SIGNALS, NO_TURN_RULES, RoutePlanner, SignalControl} from './ports'
 import {Turns} from "@core/sim/junctions/Turns";
-import {laneCentre} from "@core/graph/laneGeometry";
+import {laneCentre, STOP_LINE_M} from "@core/graph/laneGeometry";
 import {Movements} from "@core/sim/junctions/Movements";
 import {TurnLaneGuide} from "@core/sim/lanes/TurnLaneGuide";
 import {createRng} from "@core/util/random";
@@ -186,6 +186,14 @@ describe('traffic signals', () => {
         expect(waiting).toBeLessThan(199.5) // ...but did not cross it
 
         expect(run(simulation, 12)).toBeGreaterThan(210) // green at t = 34 s: it has gone through
+    })
+
+    it('reports the state of every signal approach', () => {
+        const simulation = withSignals(0) // main road (edge 0) green, side road (edge 2) red
+        expect(simulation.signalApproaches).toEqual([0, 2])
+        const states = new Uint8Array(2)
+        simulation.writeSignalStates(states)
+        expect([...states]).toEqual([0, 2])
     })
 })
 
@@ -411,7 +419,7 @@ describe('lane offset', () => {
     it('shifts vehicles to the right of their direction, by lane', () => {
         const out = new Float32Array(4)
         scenario().writePositions(out, true)
-        expect(out[0]).toBeCloseTo(50)
+        expect(out[0]).toBeCloseTo(50 - STOP_LINE_M)
         expect(out[1]).toBeCloseTo(-laneCentre(0)) // heading east, right is south (y down)
         expect(out[3]).toBeCloseTo(-laneCentre(1))
     })
@@ -421,6 +429,17 @@ describe('lane offset', () => {
         scenario().writePositions(out)
         expect(out[1]).toBeCloseTo(0)
         expect(out[3]).toBeCloseTo(0)
+    })
+    
+    it('draws a vehicle that just left an edge still on that edge', () => {
+        const road = makeGraph([[0, 0], [100, 0], [200, 0]], [{ from: 0, to: 1 }, { from: 1, to: 2 }])
+        const simulation = build(road)
+        simulation.addVehicle(0, 99, 10)
+        simulation.step(0.2) // now about 1 m into the second edge
+        const out = new Float32Array(2)
+        simulation.writePositions(out, true)
+        expect(out[0]).toBeLessThan(100) // still drawn before the junction...
+        expect(out[0]).toBeGreaterThan(90) // ...STOP_LINE_M behind where it really is
     })
 })
 

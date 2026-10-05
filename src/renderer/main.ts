@@ -23,8 +23,9 @@ let playing = false
 let measureWall = 0
 let measureSimTime = 0
 
-sim.onFrame = (positions, speeds, lanes, time) => {
+sim.onFrame = (positions, speeds, lanes, signals, time) => {
     map.setVehicles(positions, speeds, lanes)
+    map.setSignalStates(signals)
 
     // Once a second, show how fast the simulation really runs compared to real time
     const now = performance.now()
@@ -39,6 +40,9 @@ sim.onFrame = (positions, speeds, lanes, time) => {
         measureSimTime = time
     }
 }
+
+sim.onSignalSetup = (approaches) => map.setSignalApproaches(approaches)
+
 sim.onError = (message) => {
     status.textContent = `Simulation error: ${message}`
     setPlaying(false)

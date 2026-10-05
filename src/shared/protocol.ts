@@ -12,5 +12,14 @@ export type ToWorker =
 
 /** Messages the worker sends back. */
 export type FromWorker =
-    | { type: 'frame'; time: number; positions: Float32Array; speeds: Float32Array; lanes: Uint8Array }
+    | {
+    type: 'frame'
+    time: number
+    positions: Float32Array
+    speeds: Float32Array
+    lanes: Uint8Array
+    signals: Uint8Array
+}
+    /** Sent once per new simulation: the edges whose end has a signal (the order `signals` uses) */
+    | { type: 'signalSetup'; approaches: Int32Array }
     | { type: 'error'; message: string }

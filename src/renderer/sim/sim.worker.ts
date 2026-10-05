@@ -42,7 +42,7 @@ function tick(): void {
     }
     
     if (!awaitingAck) sendFrame()
-
+    
     // Schedule the next tick after this one finished, so ticks never pile up
     const spent = performance.now() - started
     timer = setTimeout(tick, Math.max(0, TICK_MS - spent))
@@ -53,13 +53,15 @@ function sendFrame(): void {
     const positions = new Float32Array(simulation.vehicleCount * 2)
     const speeds = new Float32Array(simulation.vehicleCount)
     const lanes = new Uint8Array(simulation.vehicleCount)
+    const signals = new Uint8Array(simulation.signalApproaches.length)
     simulation.writePositions(positions, true)
     simulation.writeSpeedRatios(speeds)
     simulation.writeLanes(lanes)
+    simulation.writeSignalStates(signals)
     awaitingAck = true
     scope.postMessage(
-        { type: 'frame', time: simulation.time, positions, speeds, lanes },
-        [positions.buffer, speeds.buffer, lanes.buffer]
+        { type: 'frame', time: simulation.time, positions, speeds, lanes, signals },
+        [positions.buffer, speeds.buffer, lanes.buffer, signals.buffer]
     )
 }
 
@@ -98,6 +100,9 @@ scope.onmessage = (event) => {
                     vehicleCount: message.vehicleCount,
                     seed: message.seed
                 })
+
+                const approaches = Int32Array.from(simulation.signalApproaches)
+                scope.postMessage({ type: 'signalSetup', approaches }, [approaches.buffer])
                 awaitingAck = false
                 sendFrame() // show the starting positions even while paused
             } catch (error) {
