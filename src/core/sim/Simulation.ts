@@ -9,7 +9,7 @@ import {
     type Rng,
     type RoutePlanner,
     type SignalControl,
-    type TurnRules, PathRules, NO_PATH_RULES, LaneGuide, NO_LANE_GUIDE
+    type TurnRules, PathRules, NO_PATH_RULES, LaneGuide, NO_LANE_GUIDE, JunctionStatsSink, NO_STATS, JunctionReport
 } from './ports'
 import {laneCentre, STOP_LINE_M} from "@core/graph/laneGeometry";
 
@@ -61,7 +61,8 @@ const LANE_GAIN_M = 15
 const REROUTE_AFTER_S = 20
 /** After rerouting, a driver waits this long before doing it again (s) */
 const REROUTE_COOLDOWN_S = 20
-
+/** A vehicle slower than CREEP_MS this close to a junction counts as delayed by it (m) */
+const DELAY_ZONE_M = 60
 
 interface Vehicle {
     /** Edge indices to drive along, in order */
@@ -122,6 +123,7 @@ export class Simulation {
     private readonly probe = new Float32Array(4)
     /** Set by findLeaderOnRoute: the route index whose next edge holds the blocking vehicle, or -1 */
     private blockedAt = -1
+    private readonly stats: JunctionStatsSink
     
     constructor(
         graph: RoadGraph,
@@ -132,7 +134,8 @@ export class Simulation {
         junctions: JunctionControl = NO_JUNCTION_RULES,
         turns: TurnRules = NO_TURN_RULES,
         paths: PathRules = NO_PATH_RULES,
-        guide: LaneGuide = NO_LANE_GUIDE
+        guide: LaneGuide = NO_LANE_GUIDE,
+        stats: JunctionStatsSink = NO_STATS,
     ) {
         this.graph = graph
         this.planner = planner
@@ -151,6 +154,7 @@ export class Simulation {
         this.paths = paths
         this.guide = guide
         this.changesLanes = guide !== NO_LANE_GUIDE
+        this.stats = stats
     }
 
     private laneCount(edge: number): number {
@@ -339,6 +343,7 @@ export class Simulation {
         this.changeLanes(dt)
         // Everyone decides based on the same snapshot...
         this.decide()
+        this.stats.endStep()
         // ...and only then does everyone move, so the update order cannot matter
         for (const vehicle of this.vehicles) this.move(vehicle, dt)
         this.elapsed += dt
@@ -727,8 +732,13 @@ export class Simulation {
             this.placeRandomly(vehicle) // gridlock: put the vehicle somewhere else
             return
         }
+        const here = edges[vehicle.route[vehicle.routeIndex]]
+        if (vehicle.speed < CREEP_MS && here.length - vehicle.offset < DELAY_ZONE_M) {
+            this.stats.delayed(here.to, dt)
+        }
+        
         vehicle.offset += vehicle.speed * dt
-
+        
         let edge = edges[vehicle.route[vehicle.routeIndex]]
         // Possibly cross several short edges in one step
         while (vehicle.offset >= edge.length) {
@@ -736,6 +746,8 @@ export class Simulation {
             const left = vehicle.route[vehicle.routeIndex]
             vehicle.prevEdge = left
             vehicle.prevLane = vehicle.lane
+            // Links inside a split junction are not separate junctions: count it when leaving an approach only
+            if (!this.junctions.isInternal(left)) this.stats.passed(edges[left].to)
             vehicle.routeIndex++
             if (vehicle.routeIndex >= vehicle.route.length) {
                 this.placeRandomly(vehicle) // the road ended: reappear somewhere else
@@ -755,6 +767,11 @@ export class Simulation {
         for (let i = 0; i < this.vehicles.length; i++) out[i] = this.vehicles[i].lane
     }
 
+    /** The junctions with the most total delay so far, worst first. */
+    junctionReport(count = 10, includeQuiet = false): JunctionReport[] {
+        return this.stats.top(count, includeQuiet)
+    }
+    
     /** Edges whose end is controlled by a traffic signal */
     get signalApproaches(): readonly number[] {
         return this.signals.approaches

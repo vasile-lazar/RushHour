@@ -8,12 +8,21 @@ import { RandomWalkPlanner } from './routing/RandomWalkPlanner'
 import { Simulation, VEHICLE_LENGTH_M } from './Simulation'
 import { TrafficSignals } from './signals/TrafficSignals'
 import { PriorityJunctions } from './junctions/PriorityJunctions'
-import {NO_JUNCTION_RULES, NO_SIGNALS, NO_TURN_RULES, RoutePlanner, SignalControl} from './ports'
+import {
+    NO_JUNCTION_RULES,
+    NO_LANE_GUIDE,
+    NO_PATH_RULES,
+    NO_SIGNALS,
+    NO_TURN_RULES,
+    RoutePlanner,
+    SignalControl
+} from './ports'
 import {Turns} from "@core/sim/junctions/Turns";
 import {laneCentre, STOP_LINE_M} from "@core/graph/laneGeometry";
 import {Movements} from "@core/sim/junctions/Movements";
 import {TurnLaneGuide} from "@core/sim/lanes/TurnLaneGuide";
 import {createRng} from "@core/util/random";
+import {JunctionStats} from "@core/sim/stats/JunctionStats";
 
 // Three points 100 m apart; every edge has a 10 m/s speed limit
 const line = twoWayLine([[0, 0], [100, 0], [200, 0]])
@@ -510,5 +519,36 @@ describe('left-turn ring', () => {
         console.log(simulation.traceLeaders(60).join('\n')) // temporary: remove once it passes
         expect(simulation.countStanding(100)).toBe(0)
         expect(simulation.teleports).toBe(0)
+    })
+})
+
+describe('junction statistics', () => {
+    const road = makeGraph([[0, 0], [200, 0], [400, 0]], [{ from: 0, to: 1 }, { from: 1, to: 2 }])
+    const nodeClusters = Int32Array.from(road.nodes, (_, i) => i)
+
+    function run(signals: SignalControl, seconds: number): Simulation {
+        const stats = new JunctionStats(road, nodeClusters)
+        const planner = new RandomWalkPlanner(road, isDrivable)
+        const simulation = new Simulation(
+            road, planner, () => 0, new IdmModel(), signals,
+            NO_JUNCTION_RULES, NO_TURN_RULES, NO_PATH_RULES, NO_LANE_GUIDE, stats
+        )
+        simulation.addVehicle(0, 100, 10)
+        for (let i = 0; i < seconds * 10; i++) simulation.step(0.1)
+        return simulation
+    }
+
+    it('records the delay of a vehicle waiting at a red light', () => {
+        const [top] = run({ stateOf: () => 'red', approaches: [0] }, 60).junctionReport(3)
+        expect(top.id).toBe(1)
+        expect(top.x).toBe(200)
+        expect(top.delay).toBeGreaterThan(30)
+        expect(top.passed).toBe(0)
+        expect(top.maxQueue).toBe(1)
+    })
+
+    it('counts a vehicle driving through a junction without delaying it', () => {
+        const simulation = run(NO_SIGNALS, 20)
+        expect(simulation.junctionReport(3)).toEqual([]) // no delay, so it is not listed
     })
 })

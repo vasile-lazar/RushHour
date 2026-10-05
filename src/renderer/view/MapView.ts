@@ -176,6 +176,19 @@ export class MapView {
         this.signalStates = states
         this.requestDraw()
     }
+
+    /** Centres the view on a world point, zooming in if the view is further out than `minScale`. */
+    focusOn(x: number, y: number, minScale = 1): void {
+        const { viewport } = this
+        if (viewport.scale < minScale) {
+            viewport.zoomAt(viewport.width / 2, viewport.height / 2, minScale / viewport.scale)
+        }
+        const sx = x * viewport.scale + viewport.offsetX
+        const sy = -y * viewport.scale + viewport.offsetY
+        viewport.panBy(viewport.width / 2 - sx, viewport.height / 2 - sy)
+        this.viewChanged()
+    }
+    
     // --- drawing ---------------------------------------------------------
 
     /** The slow part: strokes every road into the off-screen layer. */

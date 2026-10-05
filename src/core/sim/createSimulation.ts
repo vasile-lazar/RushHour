@@ -8,7 +8,7 @@ import {
     NO_JUNCTION_RULES,
     NO_TURN_RULES,
     NO_PATH_RULES,
-    NO_LANE_GUIDE
+    NO_LANE_GUIDE, NO_STATS
 } from './ports'
 import {isDrivable} from './roadRules'
 import {RandomWalkPlanner} from './routing/RandomWalkPlanner'
@@ -18,6 +18,8 @@ import {PriorityJunctions} from './junctions/PriorityJunctions'
 import {Turns} from './junctions/Turns'
 import {Movements} from "@core/sim/junctions/Movements";
 import {TurnLaneGuide} from './lanes/TurnLaneGuide'
+import {JunctionStats} from "@core/sim/stats/JunctionStats";
+import {buildClusters} from "@core/graph/clusters";
 
 export interface SimulationOptions {
     vehicleCount: number
@@ -33,6 +35,8 @@ export interface SimulationOptions {
     turns?: boolean
     /** Set to false to run without turn lanes and lane changing (default: on) */
     lanes?: boolean
+    /** Set to false to skip junction statistics (default: on) */ 
+    stats?: boolean
 }
 
 export function createSimulation(graph: RoadGraph, options: SimulationOptions): Simulation {
@@ -48,6 +52,8 @@ export function createSimulation(graph: RoadGraph, options: SimulationOptions): 
     const turns = options.turns === false ? NO_TURN_RULES : new Turns(graph)
     const paths = options.junctions === false ? NO_PATH_RULES : new Movements(graph)
     const guide = options.lanes === false ? NO_LANE_GUIDE : new TurnLaneGuide(graph, canDrive, junctions)
+    const stats =
+        options.stats === false ? NO_STATS : new JunctionStats(graph, buildClusters(graph, canDrive))
     const simulation = new Simulation(
         graph,
         planner,
@@ -57,7 +63,8 @@ export function createSimulation(graph: RoadGraph, options: SimulationOptions): 
         junctions,
         turns,
         paths,
-        guide
+        guide,
+        stats
     )
     simulation.spawn(options.vehicleCount)
     return simulation

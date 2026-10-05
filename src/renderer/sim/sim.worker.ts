@@ -6,6 +6,10 @@ import type { FromWorker, ToWorker } from '@shared/protocol'
 
 const COMPUTE_BUDGET_MS = 12
 
+/** How often the junction report is sent (ms of real time) */
+const REPORT_MS = 1000
+let lastReport = 0
+
 // The DOM typings and worker typings clash, so describe just the parts we use
 interface WorkerScope {
     onmessage: ((event: MessageEvent<ToWorker>) => void) | null
@@ -42,6 +46,11 @@ function tick(): void {
     }
     
     if (!awaitingAck) sendFrame()
+    
+    if (started - lastReport >= REPORT_MS) {
+        lastReport = started
+        sendReport()
+    }
     
     // Schedule the next tick after this one finished, so ticks never pile up
     const spent = performance.now() - started
@@ -80,6 +89,11 @@ function fail(message: string): void {
     scope.postMessage({ type: 'error', message })
 }
 
+function sendReport(): void {
+    if (!simulation) return
+    scope.postMessage({ type: 'junctions', rows: simulation.junctionReport(10) })
+}
+
 scope.onmessage = (event) => {
     const message = event.data
     switch (message.type) {
@@ -103,6 +117,8 @@ scope.onmessage = (event) => {
 
                 const approaches = Int32Array.from(simulation.signalApproaches)
                 scope.postMessage({ type: 'signalSetup', approaches }, [approaches.buffer])
+                lastReport = 0
+                sendReport() // clears the panel
                 awaitingAck = false
                 sendFrame() // show the starting positions even while paused
             } catch (error) {
@@ -122,7 +138,17 @@ scope.onmessage = (event) => {
         case 'setTimeScale':
             timeScale = message.value
             break
-
+        
+        case 'exportJunctions':
+            if (simulation) {
+                scope.postMessage({
+                    type: 'junctionTable',
+                    time: simulation.time,
+                    rows: simulation.junctionReport(Infinity, true)
+                })
+            }
+            break
+        
         case 'ack':
             awaitingAck = false
             break
